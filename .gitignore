@@ -29,3 +29,10 @@ example/
 temp_reference/
 backend/venv/
 backend/.venv/
+
+# Local architecture notes (living doc)
+PROJECT_FLOW_NOTES.md
+
+# Logs
+agent-logs.txt
+*.log
