@@ -116,11 +116,35 @@ class CallService:
     async def _dispatch_agent(call: CallRecord, assistant_config: dict = None, sip_trunk_id: str = None):
         """Dispatch the LiveKit agent to handle the call."""
         import json
-        
+
+        from services.config.workspace_integrations_service import WorkspaceIntegrationService
+        from shared.settings import config as global_config
+
+        livekit_url = global_config.LIVEKIT_URL
+        livekit_api_key = global_config.LIVEKIT_API_KEY
+        livekit_api_secret = global_config.LIVEKIT_API_SECRET
+
+        # Per-workspace LiveKit credentials (fallback to env-based config)
+        workspace_id = call.workspace_id
+        if workspace_id:
+            try:
+                integrations = await WorkspaceIntegrationService.get_workspace_integrations(
+                    workspace_id, decrypt=True
+                )
+            except Exception as e:
+                integrations = None
+                logger.warning("Failed to load workspace integrations for LiveKit: %s", e)
+
+            if integrations and integrations.get("livekit"):
+                lk_cfg = integrations["livekit"]
+                livekit_url = lk_cfg.get("url") or livekit_url
+                livekit_api_key = lk_cfg.get("api_key") or livekit_api_key
+                livekit_api_secret = lk_cfg.get("api_secret") or livekit_api_secret
+
         lk_api = api.LiveKitAPI(
-            url=config.LIVEKIT_URL,
-            api_key=config.LIVEKIT_API_KEY,
-            api_secret=config.LIVEKIT_API_SECRET,
+            url=livekit_url,
+            api_key=livekit_api_key,
+            api_secret=livekit_api_secret,
         )
         
         try:

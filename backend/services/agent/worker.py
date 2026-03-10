@@ -241,6 +241,7 @@ async def entrypoint(ctx: agents.JobContext):
     
     # Import model factory
     from services.agent.model_factory import get_stt, get_llm, get_tts, get_realtime_model
+    from services.config.workspace_integrations_service import WorkspaceIntegrationService
     
     # Parse metadata
     phone_number = None
@@ -306,6 +307,74 @@ async def entrypoint(ctx: agents.JobContext):
     mode = voice_config.get("mode") or mode or "pipeline"
     logger.info(f"Agent metadata: assistant_id={assistant_id}, workspace_id={workspace_id}, mode={mode}")
 
+    # Load per-workspace integrations (with env-variable fallback for backward compatibility)
+    api_keys = {}
+    if workspace_id:
+        try:
+            integrations = await WorkspaceIntegrationService.get_workspace_integrations(
+                workspace_id, decrypt=True
+            )
+            if integrations:
+                logger.info(
+                    "Using workspace-specific AI provider credentials for workspace_id=%s",
+                    workspace_id,
+                )
+            else:
+                logger.info(
+                    "No workspace-specific AI provider credentials found, falling back to env for workspace_id=%s",
+                    workspace_id,
+                )
+        except Exception as e:
+            integrations = None
+            logger.warning("Failed to load workspace integrations: %s", e)
+
+        if integrations:
+            ai_cfg = integrations.get("ai_providers") or {}
+            api_keys = {
+                "openai": ai_cfg.get("openai_key") or config.OPENAI_API_KEY,
+                "deepgram": ai_cfg.get("deepgram_key") or config.DEEPG
+RAM_API_KEY,
+                "google": ai_cfg.get("google_key") or config.GOOGLE_API_KEY,
+                "elevenlabs": ai_cfg.get("elevenlabs_key") or config.ELEVEN
+LABS_API_KEY,
+                "cartesia": ai_cfg.get("cartesia_key") or config.CARTESIA_A
+PI_KEY,
+                "anthropic": ai_cfg.get("anthropic_key") or config.ANTHROP
+IC_API_KEY,
+                "assemblyai": ai_cfg.get("assemblyai_key") or config.ASSEMB
+LYAI_API_KEY,
+            }
+        else:
+            api_keys = {
+                "openai": config.OPENAI_API_KEY,
+                "deepgram": config.DEEPG
+RAM_API_KEY,
+                "google": config.GOOGLE_API_KEY,
+                "elevenlabs": config.ELEVEN
+LABS_API_KEY,
+                "cartesia": config.CARTESIA_A
+PI_KEY,
+                "anthropic": config.ANTHROP
+IC_API_KEY,
+                "assemblyai": config.ASSEMB
+LYAI_API_KEY,
+            }
+    else:
+        api_keys = {
+            "openai": config.OPENAI_API_KEY,
+            "deepgram": config.DEEPG
+RAM_API_KEY,
+            "google": config.GOOGLE_API_KEY,
+            "elevenlabs": config.ELEVEN
+LABS_API_KEY,
+            "cartesia": config.CARTESIA_A
+PI_KEY,
+            "anthropic": config.ANTHROP
+IC_API_KEY,
+            "assemblyai": config.ASSEMB
+LYAI_API_KEY,
+        }
+
     # Use room name as call_id if not provided
     if not call_id:
         call_id = ctx.room.name
@@ -359,15 +428,15 @@ async def entrypoint(ctx: agents.JobContext):
         # Pipeline mode: STT → LLM → TTS (more flexible)
         logger.info(f"Pipeline: STT={voice_config.get('stt_provider')}, LLM={provider}/{model}, TTS={voice_config.get('tts_provider')}")
         session = AgentSession(
-            stt=get_stt(voice_config),
-            llm=get_llm(voice_config),
-            tts=get_tts(voice_config),
+            stt=get_stt(voice_config, api_keys=api_keys),
+            llm=get_llm(voice_config, api_keys=api_keys),
+            tts=get_tts(voice_config, api_keys=api_keys),
         )
     else:
         # Realtime mode: Speech-to-Speech (lowest latency)
         logger.info(f"Realtime: provider/model={provider}/{model}, voice={voice_config.get('voice_id')}")
         session = AgentSession(
-            llm=get_realtime_model(voice_config),
+            llm=get_realtime_model(voice_config, api_keys=api_keys),
         )
 
     if assistant_id:

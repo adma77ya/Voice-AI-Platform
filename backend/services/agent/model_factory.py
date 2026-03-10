@@ -53,13 +53,32 @@ except ImportError:
     pass
 
 
-def get_stt(voice_config: dict) -> Any:
+def _apply_api_keys(api_keys: Optional[dict]) -> None:
+    """Set provider API keys in environment for the current process."""
+    if not api_keys:
+        return
+    for env_name, key in [
+        ("OPENAI_API_KEY", api_keys.get("openai")),
+        ("DEEPGRAM_API_KEY", api_keys.get("deepgram")),
+        ("GOOGLE_API_KEY", api_keys.get("google")),
+        ("ELEVENLABS_API_KEY", api_keys.get("elevenlabs")),
+        ("CARTESIA_API_KEY", api_keys.get("cartesia")),
+        ("ANTHROPIC_API_KEY", api_keys.get("anthropic")),
+        ("ASSEMBLYAI_API_KEY", api_keys.get("assemblyai")),
+    ]:
+        if key:
+            os.environ[env_name] = key
+
+
+def get_stt(voice_config: dict, api_keys: Optional[dict] = None) -> Any:
     """
     Create STT instance based on provider configuration.
     
     Supported providers: deepgram, openai, assemblyai
     """
     from livekit.plugins import openai
+
+    _apply_api_keys(api_keys)
     
     provider = voice_config.get("stt_provider", "deepgram")
     model = voice_config.get("stt_model", "nova-2")
@@ -84,13 +103,15 @@ def get_stt(voice_config: dict) -> Any:
         return openai.STT(model="whisper-1", language=language)
 
 
-def get_llm(voice_config: dict) -> Any:
+def get_llm(voice_config: dict, api_keys: Optional[dict] = None) -> Any:
     """
     Create LLM instance based on provider configuration.
     
     Supported providers: openai, anthropic, google, groq
     """
     from livekit.plugins import openai
+
+    _apply_api_keys(api_keys)
     
     provider = voice_config.get("llm_provider", "openai")
     model = voice_config.get("llm_model", "gpt-4o-mini")
@@ -118,13 +139,15 @@ def get_llm(voice_config: dict) -> Any:
         return openai.LLM(model="gpt-4o-mini")
 
 
-def get_tts(voice_config: dict) -> Any:
+def get_tts(voice_config: dict, api_keys: Optional[dict] = None) -> Any:
     """
     Create TTS instance based on provider configuration.
     
     Supported providers: elevenlabs, openai, cartesia, deepgram
     """
     from livekit.plugins import openai
+
+    _apply_api_keys(api_keys)
     
     provider = voice_config.get("tts_provider", "openai")
     model = voice_config.get("tts_model", "tts-1")
@@ -152,13 +175,15 @@ def get_tts(voice_config: dict) -> Any:
         return openai.TTS(model="tts-1", voice="alloy")
 
 
-def get_realtime_model(voice_config: dict) -> Any:
+def get_realtime_model(voice_config: dict, api_keys: Optional[dict] = None) -> Any:
     """
     Create Realtime (speech-to-speech) model instance.
     
     Supported providers: openai, google
     """
     from livekit.plugins import openai
+
+    _apply_api_keys(api_keys)
     
     provider = voice_config.get("realtime_provider", "openai")
     model = voice_config.get("realtime_model", "gpt-4o-realtime-preview")

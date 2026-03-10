@@ -163,14 +163,34 @@ class PhoneNumberService:
         from livekit import api
         from livekit.protocol import sip as sip_proto
         from shared.settings import config
+        from services.config.workspace_integrations_service import WorkspaceIntegrationService
         
         db = get_database()
-        
+
+        livekit_url = config.LIVEKIT_URL
+        livekit_api_key = config.LIVEKIT_API_KEY
+        livekit_api_secret = config.LIVEKIT_API_SECRET
+
+        if workspace_id:
+            try:
+                integrations = await WorkspaceIntegrationService.get_workspace_integrations(
+                    workspace_id, decrypt=True
+                )
+            except Exception as e:
+                integrations = None
+                logger.warning("Failed to load workspace integrations for LiveKit inbound setup: %s", e)
+
+            if integrations and integrations.get("livekit"):
+                lk_cfg = integrations["livekit"]
+                livekit_url = lk_cfg.get("url") or livekit_url
+                livekit_api_key = lk_cfg.get("api_key") or livekit_api_key
+                livekit_api_secret = lk_cfg.get("api_secret") or livekit_api_secret
+
         # Connect to LiveKit API
         lk_api = api.LiveKitAPI(
-            url=config.LIVEKIT_URL,
-            api_key=config.LIVEKIT_API_KEY,
-            api_secret=config.LIVEKIT_API_SECRET,
+            url=livekit_url,
+            api_key=livekit_api_key,
+            api_secret=livekit_api_secret,
         )
         
         try:
@@ -277,6 +297,7 @@ class PhoneNumberService:
         """Delete an inbound phone number and its LiveKit resources."""
         from livekit import api
         from shared.settings import config
+        from services.config.workspace_integrations_service import WorkspaceIntegrationService
         
         db = get_database()
         
@@ -294,10 +315,29 @@ class PhoneNumberService:
         # Delete LiveKit resources if they exist
         if phone.dispatch_rule_id or phone.inbound_trunk_id:
             try:
+                livekit_url = config.LIVEKIT_URL
+                livekit_api_key = config.LIVEKIT_API_KEY
+                livekit_api_secret = config.LIVEKIT_API_SECRET
+
+                if workspace_id:
+                    try:
+                        integrations = await WorkspaceIntegrationService.get_workspace_integrations(
+                            workspace_id, decrypt=True
+                        )
+                    except Exception as e:
+                        integrations = None
+                        logger.warning("Failed to load workspace integrations for LiveKit inbound delete: %s", e)
+
+                    if integrations and integrations.get("livekit"):
+                        lk_cfg = integrations["livekit"]
+                        livekit_url = lk_cfg.get("url") or livekit_url
+                        livekit_api_key = lk_cfg.get("api_key") or livekit_api_key
+                        livekit_api_secret = lk_cfg.get("api_secret") or livekit_api_secret
+
                 lk_api = api.LiveKitAPI(
-                    url=config.LIVEKIT_URL,
-                    api_key=config.LIVEKIT_API_KEY,
-                    api_secret=config.LIVEKIT_API_SECRET,
+                    url=livekit_url,
+                    api_key=livekit_api_key,
+                    api_secret=livekit_api_secret,
                 )
                 
                 # Delete dispatch rule first
@@ -335,6 +375,7 @@ class SipConfigService:
         """Create a new SIP configuration and optionally create LiveKit trunk."""
         from livekit import api
         from shared.settings import config
+        from services.config.workspace_integrations_service import WorkspaceIntegrationService
         
         db = get_database()
         
@@ -350,10 +391,29 @@ class SipConfigService:
         # If no trunk_id provided, create a new LiveKit outbound trunk
         if not trunk_id:
             try:
+                livekit_url = config.LIVEKIT_URL
+                livekit_api_key = config.LIVEKIT_API_KEY
+                livekit_api_secret = config.LIVEKIT_API_SECRET
+
+                if workspace_id:
+                    try:
+                        integrations = await WorkspaceIntegrationService.get_workspace_integrations(
+                            workspace_id, decrypt=True
+                        )
+                    except Exception as e:
+                        integrations = None
+                        logger.warning("Failed to load workspace integrations for LiveKit outbound trunk: %s", e)
+
+                    if integrations and integrations.get("livekit"):
+                        lk_cfg = integrations["livekit"]
+                        livekit_url = lk_cfg.get("url") or livekit_url
+                        livekit_api_key = lk_cfg.get("api_key") or livekit_api_key
+                        livekit_api_secret = lk_cfg.get("api_secret") or livekit_api_secret
+
                 lk_api = api.LiveKitAPI(
-                    url=config.LIVEKIT_URL,
-                    api_key=config.LIVEKIT_API_KEY,
-                    api_secret=config.LIVEKIT_API_SECRET,
+                    url=livekit_url,
+                    api_key=livekit_api_key,
+                    api_secret=livekit_api_secret,
                 )
                 
                 # Create outbound trunk with provided credentials
