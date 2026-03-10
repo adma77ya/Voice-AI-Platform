@@ -87,6 +87,57 @@ class PhoneNumberService:
         if doc:
             return PhoneNumber.from_dict(doc)
         return None
+
+    @staticmethod
+    async def get_assistant_by_number(number: str) -> Optional[dict]:
+        """Resolve assistant config for an active inbound phone number."""
+        if not number:
+            return None
+
+        db = get_database()
+        phone_doc = await db.phone_numbers.find_one(
+            {
+                "number": number,
+                "direction": "inbound",
+                "is_active": True,
+                "assistant_id": {"$exists": True, "$ne": None, "$ne": ""},
+            }
+        )
+        if not phone_doc:
+            return None
+
+        assistant_id = phone_doc.get("assistant_id")
+        workspace_id = phone_doc.get("workspace_id")
+
+        from services.config.assistant_service import AssistantService
+
+        assistant = await AssistantService.get_assistant(assistant_id, workspace_id=workspace_id)
+        if not assistant or not assistant.is_active:
+            return None
+
+        voice = assistant.voice.model_dump() if assistant.voice else {}
+        voice_mode = voice.get("mode") or "pipeline"
+        if voice_mode == "realtime":
+            voice_provider = voice.get("realtime_provider")
+            voice_model = voice.get("realtime_model")
+        else:
+            voice_provider = voice.get("llm_provider")
+            voice_model = voice.get("llm_model")
+
+        return {
+            "assistant_id": assistant.assistant_id,
+            "workspace_id": assistant.workspace_id or workspace_id,
+            "instructions": assistant.instructions,
+            "first_message": assistant.first_message,
+            "temperature": assistant.temperature,
+            "voice": voice,
+            "voice_mode": voice_mode,
+            "voice_provider": voice_provider,
+            "voice_model": voice_model,
+            "phone_id": phone_doc.get("phone_id"),
+            "to_number": phone_doc.get("number"),
+            "inbound_trunk_id": phone_doc.get("inbound_trunk_id"),
+        }
     
     @staticmethod
     async def delete_phone_number(phone_id: str, workspace_id: str = None) -> bool:
@@ -169,8 +220,9 @@ class PhoneNumberService:
             trunk_id = trunk.sip_trunk_id
             logger.info(f"Created inbound trunk: {trunk_id}")
             
-            # 2. Create Dispatch Rule linking to agent
-            logger.info(f"Creating dispatch rule for agent")
+            # 2. Create Dispatch Rule for room routing only.
+            # Agent dispatch is handled by gateway /inbound-call to ensure metadata parity with outbound.
+            logger.info("Creating dispatch rule for inbound room routing")
             dispatch_rule = sip_proto.SIPDispatchRuleInfo(
                 name=f"Dispatch-{request.number}",
                 trunk_ids=[trunk_id],
@@ -179,12 +231,6 @@ class PhoneNumberService:
                         room_prefix="call-",
                     )
                 ),
-            )
-            # Set room config with agent dispatch
-            dispatch_rule.room_config.CopyFrom(
-                api.RoomConfiguration(
-                    agents=[api.RoomAgentDispatch(agent_name="voice-assistant")]
-                )
             )
             
             result = await lk_api.sip.create_sip_dispatch_rule(

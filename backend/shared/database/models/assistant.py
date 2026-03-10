@@ -16,7 +16,7 @@ class VoiceConfig(BaseModel):
     voice_id: str = "alloy"  # Voice ID for TTS
     
     # Mode: "realtime" (speech-to-speech) or "pipeline" (STT→LLM→TTS)
-    mode: str = "realtime"
+    mode: str = "pipeline"
     
     # === Realtime Mode (Speech-to-Speech) ===
     realtime_provider: str = "openai"  # openai, google
@@ -29,8 +29,8 @@ class VoiceConfig(BaseModel):
     stt_language: str = "en"
     
     # LLM (Large Language Model)
-    llm_provider: str = "openai"  # openai, anthropic, google, groq
-    llm_model: str = "gpt-4o-mini"  # gpt-4o, gpt-4o-mini, claude-3-5-sonnet, gemini-1.5-pro
+    llm_provider: str = "google"  # openai, anthropic, google, groq
+    llm_model: str = "gemini-2.0-flash"  # gpt-4o, gpt-4o-mini, claude-3-5-sonnet, gemini-2.0-flash
     
     # TTS (Text-to-Speech)
     tts_provider: str = "elevenlabs"  # elevenlabs, openai, cartesia, deepgram

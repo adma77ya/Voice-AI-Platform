@@ -39,6 +39,7 @@ import {
     Plus,
     Search,
     MoreHorizontal,
+    Copy,
     Play,
     Pause,
     Trash2,
@@ -265,6 +266,53 @@ export default function Campaigns() {
         }
     };
 
+    const handleDuplicateCampaign = async (campaignId: string) => {
+        try {
+            const original = await campaignsApi.get(campaignId) as {
+                name: string;
+                description?: string | null;
+                assistant_id: string;
+                sip_id?: string | null;
+                max_concurrent_calls?: number;
+                retry_failed?: boolean;
+                contacts?: Array<{
+                    phone_number: string;
+                    name?: string;
+                    variables?: Record<string, string>;
+                }>;
+            };
+
+            const duplicateContacts = (original.contacts || [])
+                .filter((c) => c?.phone_number)
+                .map((c) => ({
+                    phone_number: c.phone_number,
+                    name: c.name,
+                    variables: c.variables || {},
+                }));
+
+            if (duplicateContacts.length === 0) {
+                toast.error("Cannot duplicate campaign with no contacts");
+                return;
+            }
+
+            await campaignsApi.create({
+                name: `${original.name} (Copy)`,
+                description: original.description || null,
+                assistant_id: original.assistant_id,
+                sip_id: original.sip_id || null,
+                contacts: duplicateContacts,
+                max_concurrent_calls: original.max_concurrent_calls || 1,
+                retry_failed: original.retry_failed || false,
+            });
+
+            toast.success("Campaign duplicated as draft");
+            await fetchData();
+        } catch (error) {
+            console.error(error);
+            toast.error("Failed to duplicate campaign");
+        }
+    };
+
     const getStatusColor = (status: string) => {
         switch (status) {
             case "running":
@@ -411,6 +459,10 @@ export default function Campaigns() {
                                                     </Button>
                                                 </DropdownMenuTrigger>
                                                 <DropdownMenuContent align="end">
+                                                    <DropdownMenuItem onClick={() => handleDuplicateCampaign(campaign.campaign_id)}>
+                                                        <Copy className="mr-2 h-4 w-4" />
+                                                        Duplicate
+                                                    </DropdownMenuItem>
                                                     {campaign.status === "draft" || campaign.status === "paused" ? (
                                                         <DropdownMenuItem onClick={() => handleStartCampaign(campaign.campaign_id)}>
                                                             <Play className="mr-2 h-4 w-4" />

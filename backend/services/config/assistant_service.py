@@ -169,6 +169,8 @@ class AssistantService:
         logger.info(f"Assistant data: {assistant}")
 
         return {
+            "assistant_id": assistant.assistant_id,
+            "workspace_id": assistant.workspace_id,
             "instructions": assistant.instructions,
             "first_message": assistant.first_message,
             "voice": assistant.voice.model_dump() if assistant.voice else {},
@@ -176,4 +178,80 @@ class AssistantService:
             "webhook_url": assistant.webhook_url,
             "tools": [t.model_dump() for t in assistant.tools] if assistant.tools else [],
         }
+
+    @staticmethod
+    async def get_assistant_by_sip_trunk(sip_trunk_id: str) -> Optional[Dict[str, Any]]:
+        """Resolve assistant configuration from an inbound SIP trunk ID."""
+        if not sip_trunk_id:
+            return None
+
+        db = get_database()
+
+        phone_doc = await db.phone_numbers.find_one(
+            {
+                "inbound_trunk_id": sip_trunk_id,
+                "is_active": True,
+                "assistant_id": {"$exists": True, "$ne": None, "$ne": ""},
+            }
+        )
+        if not phone_doc:
+            return None
+
+        assistant_id = phone_doc.get("assistant_id")
+        workspace_id = phone_doc.get("workspace_id")
+        assistant = await AssistantService.get_assistant(assistant_id, workspace_id=workspace_id)
+        if not assistant or not assistant.is_active:
+            return None
+
+        return {
+            "assistant_id": assistant.assistant_id,
+            "workspace_id": assistant.workspace_id or workspace_id,
+            "instructions": assistant.instructions,
+            "first_message": assistant.first_message,
+            "temperature": assistant.temperature,
+            "voice": assistant.voice.model_dump() if assistant.voice else {},
+            "webhook_url": assistant.webhook_url,
+        }
+
+    @staticmethod
+    async def migrate_openai_assistants_to_google() -> int:
+        """Migrate existing assistants from OpenAI voice config to Google Gemini pipeline."""
+        db = get_database()
+
+        query = {
+            "$or": [
+                {"voice.llm_provider": "openai"},
+                {"voice.realtime_provider": "openai"},
+                {"voice.provider": "openai"},
+            ]
+        }
+
+        docs = await db.assistants.find(query, {"assistant_id": 1, "workspace_id": 1}).to_list(length=10000)
+        if not docs:
+            return 0
+
+        result = await db.assistants.update_many(
+            query,
+            {
+                "$set": {
+                    "voice.mode": "pipeline",
+                    "voice.llm_provider": "google",
+                    "voice.llm_model": "gemini-2.0-flash",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+        )
+
+        # Invalidate caches for changed assistants/workspaces
+        for doc in docs:
+            assistant_id = doc.get("assistant_id")
+            workspace_id = doc.get("workspace_id")
+            if assistant_id:
+                await SessionCache.invalidate_assistant(assistant_id, workspace_id=workspace_id)
+
+        logger.info(
+            "Migrated %d assistant(s) from OpenAI to Google Gemini pipeline",
+            result.modified_count,
+        )
+        return int(result.modified_count)
 

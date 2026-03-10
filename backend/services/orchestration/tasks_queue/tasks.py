@@ -20,11 +20,12 @@ from celery import group
 from qdrant_client.http import models as qdrant_models
 from .celery_app import celery_app
 from shared.embeddings import embed_batch
-from shared.retrieval import delete_document_vectors, upsert_points
+from shared.retrieval import COLLECTION_NAME, delete_document_vectors, upsert_points
 from shared.settings import config
 import uuid
 
 logger = logging.getLogger("queue.tasks")
+kb_ingestion_logger = logging.getLogger("kb-ingestion")
 
 
 def _token_count(text: str, encoder) -> int:
@@ -140,8 +141,15 @@ async def _ingest_knowledge_async(document_id: str) -> Dict[str, Any]:
 
     workspace_id = doc.get("workspace_id")
     assistant_ids = doc.get("assigned_assistant_ids", [])
+    primary_assistant_id = assistant_ids[0] if assistant_ids else ""
     user_id = str(doc.get("user_id") or workspace_id or "")
     ingestion_started = time.perf_counter()
+
+    kb_ingestion_logger.info(
+        "KB INGEST START: document_id=%s assistant_id=%s",
+        document_id,
+        primary_assistant_id,
+    )
 
     try:
         await db.knowledge_documents.update_one(
@@ -154,15 +162,19 @@ async def _ingest_knowledge_async(document_id: str) -> Dict[str, Any]:
             raise ValueError("No extractable text found in source")
 
         content = re.sub(r"\s+", " ", content).strip()
+        kb_ingestion_logger.info("Extracted document length: %d characters", len(content))
 
         encoder = tiktoken.get_encoding("cl100k_base")
         total_tokens = _token_count(content, encoder)
         raw_chunks = _chunk_text(content, chunk_words=550, overlap_words=100)
+        kb_ingestion_logger.info("Generated %d chunks for document %s", len(raw_chunks), document_id)
 
         await db.knowledge_chunks.delete_many({"document_id": document_id})
 
         chunk_texts = [chunk["chunk_text"] for chunk in raw_chunks]
+        kb_ingestion_logger.info("Generating embeddings for %d chunks", len(raw_chunks))
         embeddings = await asyncio.to_thread(embed_batch, chunk_texts)
+        kb_ingestion_logger.info("Received %d embedding vectors", len(embeddings))
 
         if len(embeddings) != len(raw_chunks):
             raise ValueError("Embedding count mismatch")
@@ -205,7 +217,13 @@ async def _ingest_knowledge_async(document_id: str) -> Dict[str, Any]:
                     )
                 )
 
+        kb_ingestion_logger.info(
+            "Upserting %d vectors into Qdrant collection '%s'",
+            len(points),
+            COLLECTION_NAME,
+        )
         await asyncio.to_thread(upsert_points, points)
+        kb_ingestion_logger.info("Qdrant upsert completed successfully")
 
         if rows:
             await db.knowledge_chunks.insert_many(rows, ordered=False)

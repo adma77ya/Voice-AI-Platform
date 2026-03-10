@@ -27,7 +27,11 @@ class CallService:
         return f"call-{phone_clean}-{random_suffix}"
     
     @staticmethod
-    async def create_call(request: CreateCallRequest, workspace_id: Optional[str] = None) -> CallRecord:
+    async def create_call(
+        request: CreateCallRequest,
+        workspace_id: Optional[str] = None,
+        auto_dispatch: bool = True,
+    ) -> CallRecord:
         """
         Create a new call record and dispatch the agent.
         
@@ -103,7 +107,8 @@ class CallService:
             await SessionCache.invalidate_calls(workspace_id)
         
         # Dispatch the agent
-        await CallService._dispatch_agent(call, assistant_config, sip_trunk_id)
+        if auto_dispatch:
+            await CallService._dispatch_agent(call, assistant_config, sip_trunk_id)
         
         return call
     
@@ -119,15 +124,30 @@ class CallService:
         )
         
         try:
+            dispatch_workspace_id = call.workspace_id
+            if not dispatch_workspace_id and assistant_config:
+                dispatch_workspace_id = assistant_config.get("workspace_id")
+
             # Build metadata with call config
             metadata_dict = {
                 "phone_number": call.phone_number,
                 "call_id": call.call_id,
                 "assistant_id": call.assistant_id,
+                "workspace_id": dispatch_workspace_id,
                 "sip_trunk_id": sip_trunk_id or config.OUTBOUND_TRUNK_ID,
                 "instructions": call.instructions,
                 "webhook_url": call.webhook_url,
+                "direction": "outbound",
             }
+
+            if isinstance(call.metadata, dict):
+                metadata_dict.update({
+                    "from_number": call.metadata.get("from_number", call.metadata.get("phone_number")),
+                    "to_number": call.metadata.get("to_number"),
+                    "is_inbound": bool(call.metadata.get("is_inbound", False)),
+                    "sip_trunk_id": call.metadata.get("sip_trunk_id", metadata_dict["sip_trunk_id"]),
+                    "direction": call.metadata.get("direction", metadata_dict["direction"]),
+                })
             
             # Add assistant-specific config
             if assistant_config:
@@ -144,8 +164,16 @@ class CallService:
                         voice_config = voice if isinstance(voice, dict) else {}
                     
                     metadata_dict["voice"] = voice_config
+                    metadata_dict["voice_mode"] = voice_config.get("mode")
+                    metadata_dict["voice_provider"] = voice_config.get("llm_provider") if voice_config.get("mode") == "pipeline" else voice_config.get("realtime_provider")
+                    metadata_dict["voice_model"] = voice_config.get("llm_model") if voice_config.get("mode") == "pipeline" else voice_config.get("realtime_model")
                 else:
                     metadata_dict["voice_id"] = "alloy"
+
+            if isinstance(call.metadata, dict):
+                for key in ["instructions", "first_message", "temperature", "voice", "webhook_url", "voice_mode", "voice_provider", "voice_model", "direction"]:
+                    if key in call.metadata and call.metadata.get(key) is not None:
+                        metadata_dict[key] = call.metadata.get(key)
             
             metadata = json.dumps(metadata_dict)
             logger.info(f"DISPATCH METADATA: {metadata_dict}")
@@ -154,6 +182,7 @@ class CallService:
             try:
                 await lk_api.room.create_room(api.CreateRoomRequest(name=call.room_name))
                 logger.info(f"Created room: {call.room_name}")
+                logger.info(f"ROOM CREATED: {call.room_name}")
             except Exception as e:
                 logger.warning(f"Room {call.room_name} might already exist or failed execution: {e}")
 

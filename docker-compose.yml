@@ -32,9 +32,11 @@ services:
       - ./backend/.env
     environment:
       - REDIS_HOST=redis
+      - EMBEDDING_SERVICE_URL=http://embedding-service:8004/embed
     depends_on:
       - redis
       - config
+      - embedding-service
     restart: unless-stopped
     networks:
       - vobiz-network
@@ -137,9 +139,25 @@ services:
       - REDIS_HOST=redis
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
       - QDRANT_URL=http://qdrant:6333
+      - EMBEDDING_SERVICE_URL=http://embedding-service:8004/embed
     depends_on:
       - redis
       - qdrant
+      - embedding-service
+    restart: unless-stopped
+    networks:
+      - vobiz-network
+
+  # ===================
+  # EMBEDDING SERVICE
+  # ===================
+  embedding-service:
+    build:
+      context: ./backend/services/embedding_service
+      dockerfile: Dockerfile
+    container_name: vobiz-embeddings
+    ports:
+      - "8004:8004"
     restart: unless-stopped
     networks:
       - vobiz-network
@@ -178,9 +196,11 @@ services:
     environment:
       - REDIS_HOST=redis
       - QDRANT_URL=http://qdrant:6333
+      - EMBEDDING_SERVICE_URL=http://embedding-service:8004/embed
     depends_on:
       - redis
       - qdrant
+      - embedding-service
     restart: unless-stopped
     networks:
       - vobiz-network

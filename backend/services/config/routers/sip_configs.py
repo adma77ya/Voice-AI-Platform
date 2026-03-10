@@ -46,7 +46,7 @@ async def create_sip_config(
     x_workspace_id: Optional[str] = Header(None, alias="X-Workspace-ID")
 ):
     """Create SIP config and cache it."""
-    from config.phone_sip_service import SipConfigService
+    from services.config.phone_sip_service import SipConfigService
     
     try:
         sip = await SipConfigService.create_sip_config(request, x_workspace_id)
@@ -148,7 +148,7 @@ async def update_sip_config(sip_id: str, request: UpdateSipConfigRequest):
 @router.delete("/{sip_id}")
 async def delete_sip_config(sip_id: str):
     """Delete SIP config and remove from cache."""
-    from config.phone_sip_service import SipConfigService
+    from services.config.phone_sip_service import SipConfigService
     
     try:
         success = await SipConfigService.delete_sip_config(sip_id)

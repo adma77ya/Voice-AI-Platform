@@ -1,7 +1,7 @@
 """Qdrant-backed retrieval helpers for Knowledge Base RAG."""
 import logging
-import time
-from typing import Dict, List
+import os
+from typing import List
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
@@ -10,10 +10,14 @@ from shared.embeddings import embed_text
 from shared.settings import config
 
 logger = logging.getLogger("kb.retrieval")
+rag_logger = logging.getLogger("rag")
 
 QDRANT_URL = config.QDRANT_URL
-COLLECTION_NAME = "knowledge_base"
+COLLECTION_NAME = "knowledge"
 VECTOR_SIZE = 384
+SIMILARITY_THRESHOLD = 0.7
+MAX_CONTEXT_DOCS = 3
+MAX_CONTEXT_CHARS = 2000
 
 _qdrant_client: QdrantClient | None = None
 _collection_ready = False
@@ -78,77 +82,118 @@ def upsert_points(points: List[models.PointStruct]) -> None:
 
 def retrieve_context(
     assistant_id: str,
-    user_id: str,
+    workspace_id: str,
     query: str,
     top_k: int = 5,
-    threshold: float = 0.75
 ) -> str:
-    start = time.perf_counter()
-    top_score = 0.0
+    rag_logger.info("RAG QUERY RECEIVED: %s", query)
+    if not query.strip() or not assistant_id:
+        return ""
 
-    try:
-        if not assistant_id or not user_id or not query.strip():
-            elapsed_ms = (time.perf_counter() - start) * 1000
-            logger.info("retrieval_time=%.2fms top_score=%.4f rag_applied=false", elapsed_ms, top_score)
-            return ""
+    _ensure_collection()
+    client = _get_qdrant_client()
 
-        _ensure_collection()
-        client = _get_qdrant_client()
+    rag_logger.info("Embedding query using embedding service")
+    query_vector = embed_text(query)
+    rag_logger.info("Embedding dimension: %d", len(query_vector))
+    rag_logger.info("Searching Qdrant collection 'knowledge'")
+    rag_logger.info("Collection searched: %s", COLLECTION_NAME)
+    rag_logger.info("Top K: %d", top_k)
 
-        query_vector = embed_text(query)
+    must_filters = [
+        models.FieldCondition(
+            key="assistant_id",
+            match=models.MatchValue(value=assistant_id),
+        )
+    ]
+    if workspace_id:
+        must_filters.append(
+            models.FieldCondition(
+                key="user_id",
+                match=models.MatchValue(value=workspace_id),
+            )
+        )
 
-        results = client.search(
+    search_filter = models.Filter(must=must_filters)
+
+    rag_logger.info(
+        "Search filters: assistant_id=%s user_id=%s",
+        assistant_id,
+        workspace_id or "<none>",
+    )
+
+    results_response = client.query_points(
+        collection_name=COLLECTION_NAME,
+        query=query_vector,
+        query_filter=search_filter,
+        limit=top_k,
+        with_payload=True,
+    )
+    results = list(getattr(results_response, "points", []) or [])
+
+    rag_logger.info("Qdrant returned %d results", len(results))
+    rag_logger.info("Scores: %s", [round(float(hit.score or 0.0), 4) for hit in results])
+    for hit in results:
+        payload = hit.payload or {}
+        rag_logger.info(
+            "Retrieved chunk score=%f document_id=%s",
+            float(hit.score or 0.0),
+            payload.get("document_id"),
+        )
+
+    if not results:
+        rag_logger.info("No filtered results. Running fallback search without payload filter")
+        fallback_response = client.query_points(
             collection_name=COLLECTION_NAME,
-            query_vector=query_vector,
-            query_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="assistant_id",
-                        match=models.MatchValue(value=assistant_id),
-                    ),
-                    models.FieldCondition(
-                        key="user_id",
-                        match=models.MatchValue(value=user_id),
-                    ),
-                ]
-            ),
+            query=query_vector,
             limit=top_k,
             with_payload=True,
         )
+        results = list(getattr(fallback_response, "points", []) or [])
+        rag_logger.info("Fallback search returned %d results", len(results))
+        rag_logger.info("Fallback scores: %s", [round(float(hit.score or 0.0), 4) for hit in results])
 
-        if not results:
-            elapsed_ms = (time.perf_counter() - start) * 1000
-            logger.info("retrieval_time=%.2fms top_score=%.4f rag_applied=false", elapsed_ms, top_score)
-            return ""
+    min_score = float(os.getenv("RAG_MIN_SCORE", "0.0"))
+    filtered = [hit for hit in results if float(hit.score or 0.0) >= min_score]
+    logger.info("RAG retrieved %d docs for query", len(filtered))
 
-        top_score = float(results[0].score or 0.0)
-        if top_score < threshold:
-            elapsed_ms = (time.perf_counter() - start) * 1000
-            logger.info("retrieval_time=%.2fms top_score=%.4f rag_applied=false", elapsed_ms, top_score)
-            return ""
+    chunks: List[str] = []
+    total_chars = 0
+    for hit in filtered:
+        if len(chunks) >= MAX_CONTEXT_DOCS:
+            break
 
-        lines: List[str] = []
-        for idx, hit in enumerate(results, start=1):
-            payload: Dict = hit.payload or {}
-            text = str(payload.get("text") or "").strip()
-            if text:
-                lines.append(f"{idx}. {text}")
+        payload = hit.payload or {}
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            continue
 
-        if not lines:
-            elapsed_ms = (time.perf_counter() - start) * 1000
-            logger.info("retrieval_time=%.2fms top_score=%.4f rag_applied=false", elapsed_ms, top_score)
-            return ""
+        projected_chars = total_chars + len(text)
+        if projected_chars > MAX_CONTEXT_CHARS:
+            remaining = MAX_CONTEXT_CHARS - total_chars
+            if remaining <= 0:
+                break
+            text = text[:remaining].rstrip()
+            if not text:
+                break
 
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        logger.info("retrieval_time=%.2fms top_score=%.4f rag_applied=true", elapsed_ms, top_score)
-        return "Relevant Knowledge:\n" + "\n".join(lines)
+        chunks.append(text)
+        total_chars += len(text)
 
-    except Exception as exc:
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        logger.warning(
-            "retrieval_time=%.2fms top_score=%.4f rag_applied=false error=%s",
-            elapsed_ms,
-            top_score,
-            str(exc),
+    context = "\n\n".join(chunks)
+    rag_logger.info("Final RAG context length: %d characters", len(context))
+
+    debug_query = os.getenv("RAG_DEBUG_TEST_QUERY", "").strip()
+    if debug_query:
+        rag_logger.info("Running hardcoded debug search query: %s", debug_query)
+        debug_embedding = embed_text(debug_query)
+        debug_response = client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=debug_embedding,
+            limit=3,
+            with_payload=True,
         )
-        return ""
+        debug_results = list(getattr(debug_response, "points", []) or [])
+        rag_logger.info("Hardcoded debug search returned %d results", len(debug_results))
+
+    return context
