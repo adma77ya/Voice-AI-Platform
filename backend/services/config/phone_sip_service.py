@@ -471,9 +471,6 @@ class SipConfigService:
         sip = SipConfig(
             workspace_id=workspace_id,
             name=request.name,
-            sip_domain=request.sip_domain,
-            sip_username=request.sip_username,
-            sip_password=request.sip_password,
             from_number=request.from_number,
             trunk_id=trunk_id,
             description=request.description,
