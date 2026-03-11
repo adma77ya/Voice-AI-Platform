@@ -309,21 +309,13 @@ async def entrypoint(ctx: agents.JobContext):
 
     # Load per-workspace integrations (with env-variable fallback for backward compatibility)
     api_keys = {}
+    workspace_keys_exist = False
     if workspace_id:
         try:
             integrations = await WorkspaceIntegrationService.get_workspace_integrations(
                 workspace_id, decrypt=True
             )
-            if integrations:
-                logger.info(
-                    "Using workspace-specific AI provider credentials for workspace_id=%s",
-                    workspace_id,
-                )
-            else:
-                logger.info(
-                    "No workspace-specific AI provider credentials found, falling back to env for workspace_id=%s",
-                    workspace_id,
-                )
+            workspace_keys_exist = bool(integrations and integrations.get("ai_providers"))
         except Exception as e:
             integrations = None
             logger.warning("Failed to load workspace integrations: %s", e)
@@ -332,48 +324,39 @@ async def entrypoint(ctx: agents.JobContext):
             ai_cfg = integrations.get("ai_providers") or {}
             api_keys = {
                 "openai": ai_cfg.get("openai_key") or config.OPENAI_API_KEY,
-                "deepgram": ai_cfg.get("deepgram_key") or config.DEEPG
-RAM_API_KEY,
+                "deepgram": ai_cfg.get("deepgram_key") or config.DEEPGRAM_API_KEY,
                 "google": ai_cfg.get("google_key") or config.GOOGLE_API_KEY,
-                "elevenlabs": ai_cfg.get("elevenlabs_key") or config.ELEVEN
-LABS_API_KEY,
-                "cartesia": ai_cfg.get("cartesia_key") or config.CARTESIA_A
-PI_KEY,
-                "anthropic": ai_cfg.get("anthropic_key") or config.ANTHROP
-IC_API_KEY,
-                "assemblyai": ai_cfg.get("assemblyai_key") or config.ASSEMB
-LYAI_API_KEY,
+                "elevenlabs": ai_cfg.get("elevenlabs_key") or config.ELEVENLABS_API_KEY,
+                "cartesia": ai_cfg.get("cartesia_key") or config.CARTESIA_API_KEY,
+                "anthropic": ai_cfg.get("anthropic_key") or config.ANTHROPIC_API_KEY,
+                "assemblyai": ai_cfg.get("assemblyai_key") or config.ASSEMBLYAI_API_KEY,
             }
         else:
             api_keys = {
                 "openai": config.OPENAI_API_KEY,
-                "deepgram": config.DEEPG
-RAM_API_KEY,
+                "deepgram": config.DEEPGRAM_API_KEY,
                 "google": config.GOOGLE_API_KEY,
-                "elevenlabs": config.ELEVEN
-LABS_API_KEY,
-                "cartesia": config.CARTESIA_A
-PI_KEY,
-                "anthropic": config.ANTHROP
-IC_API_KEY,
-                "assemblyai": config.ASSEMB
-LYAI_API_KEY,
+                "elevenlabs": config.ELEVENLABS_API_KEY,
+                "cartesia": config.CARTESIA_API_KEY,
+                "anthropic": config.ANTHROPIC_API_KEY,
+                "assemblyai": config.ASSEMBLYAI_API_KEY,
             }
     else:
         api_keys = {
             "openai": config.OPENAI_API_KEY,
-            "deepgram": config.DEEPG
-RAM_API_KEY,
+            "deepgram": config.DEEPGRAM_API_KEY,
             "google": config.GOOGLE_API_KEY,
-            "elevenlabs": config.ELEVEN
-LABS_API_KEY,
-            "cartesia": config.CARTESIA_A
-PI_KEY,
-            "anthropic": config.ANTHROP
-IC_API_KEY,
-            "assemblyai": config.ASSEMB
-LYAI_API_KEY,
+            "elevenlabs": config.ELEVENLABS_API_KEY,
+            "cartesia": config.CARTESIA_API_KEY,
+            "anthropic": config.ANTHROPIC_API_KEY,
+            "assemblyai": config.ASSEMBLYAI_API_KEY,
         }
+
+    from shared.logging_utils import log_resolution
+
+    providers = [k for k, v in api_keys.items() if v]
+    source = "workspace_integrations" if workspace_keys_exist else "platform-env"
+    log_resolution("AI providers", workspace_id, source, providers)
 
     # Use room name as call_id if not provided
     if not call_id:

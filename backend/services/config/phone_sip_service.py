@@ -170,6 +170,7 @@ class PhoneNumberService:
         livekit_url = config.LIVEKIT_URL
         livekit_api_key = config.LIVEKIT_API_KEY
         livekit_api_secret = config.LIVEKIT_API_SECRET
+        livekit_source = "platform-env"
 
         if workspace_id:
             try:
@@ -185,6 +186,10 @@ class PhoneNumberService:
                 livekit_url = lk_cfg.get("url") or livekit_url
                 livekit_api_key = lk_cfg.get("api_key") or livekit_api_key
                 livekit_api_secret = lk_cfg.get("api_secret") or livekit_api_secret
+                livekit_source = "workspace_integrations"
+
+        from shared.logging_utils import log_resolution
+        log_resolution("LiveKit", workspace_id, livekit_source, livekit_url)
 
         # Connect to LiveKit API
         lk_api = api.LiveKitAPI(
@@ -318,6 +323,7 @@ class PhoneNumberService:
                 livekit_url = config.LIVEKIT_URL
                 livekit_api_key = config.LIVEKIT_API_KEY
                 livekit_api_secret = config.LIVEKIT_API_SECRET
+                livekit_source = "platform-env"
 
                 if workspace_id:
                     try:
@@ -333,6 +339,10 @@ class PhoneNumberService:
                         livekit_url = lk_cfg.get("url") or livekit_url
                         livekit_api_key = lk_cfg.get("api_key") or livekit_api_key
                         livekit_api_secret = lk_cfg.get("api_secret") or livekit_api_secret
+                        livekit_source = "workspace_integrations"
+
+                from shared.logging_utils import log_resolution
+                log_resolution("LiveKit", workspace_id, livekit_source, livekit_url)
 
                 lk_api = api.LiveKitAPI(
                     url=livekit_url,
@@ -378,6 +388,28 @@ class SipConfigService:
         from services.config.workspace_integrations_service import WorkspaceIntegrationService
         
         db = get_database()
+
+        if not workspace_id:
+            raise ValueError("workspace_id is required when creating SIP configs")
+
+        # Ensure telephony integration exists for this workspace
+        integrations = await WorkspaceIntegrationService.get_workspace_integrations(
+            workspace_id, decrypt=True
+        )
+        telephony = integrations.get("telephony") if integrations else None
+        if not telephony:
+            raise ValueError(
+                "Telephony provider must be configured in workspace integrations before creating SIP configs"
+            )
+        sip_domain = telephony.get("sip_domain")
+        sip_username = telephony.get("sip_username")
+        sip_password = telephony.get("sip_password")
+        from shared.logging_utils import log_resolution
+        log_resolution("Telephony", workspace_id, "workspace_integrations", sip_domain)
+        if not sip_domain or not sip_username or not sip_password:
+            raise ValueError(
+                "Telephony provider configuration is incomplete for this workspace"
+            )
         
         # If this is set as default, unset other defaults for this workspace
         if request.is_default:
@@ -395,20 +427,19 @@ class SipConfigService:
                 livekit_api_key = config.LIVEKIT_API_KEY
                 livekit_api_secret = config.LIVEKIT_API_SECRET
 
-                if workspace_id:
-                    try:
-                        integrations = await WorkspaceIntegrationService.get_workspace_integrations(
-                            workspace_id, decrypt=True
-                        )
-                    except Exception as e:
-                        integrations = None
-                        logger.warning("Failed to load workspace integrations for LiveKit outbound trunk: %s", e)
+                try:
+                    integrations = await WorkspaceIntegrationService.get_workspace_integrations(
+                        workspace_id, decrypt=True
+                    )
+                except Exception as e:
+                    integrations = None
+                    logger.warning("Failed to load workspace integrations for LiveKit outbound trunk: %s", e)
 
-                    if integrations and integrations.get("livekit"):
-                        lk_cfg = integrations["livekit"]
-                        livekit_url = lk_cfg.get("url") or livekit_url
-                        livekit_api_key = lk_cfg.get("api_key") or livekit_api_key
-                        livekit_api_secret = lk_cfg.get("api_secret") or livekit_api_secret
+                if integrations and integrations.get("livekit"):
+                    lk_cfg = integrations["livekit"]
+                    livekit_url = lk_cfg.get("url") or livekit_url
+                    livekit_api_key = lk_cfg.get("api_key") or livekit_api_key
+                    livekit_api_secret = lk_cfg.get("api_secret") or livekit_api_secret
 
                 lk_api = api.LiveKitAPI(
                     url=livekit_url,
@@ -416,14 +447,14 @@ class SipConfigService:
                     api_secret=livekit_api_secret,
                 )
                 
-                # Create outbound trunk with provided credentials
+                # Create outbound trunk using telephony credentials from workspace integrations
                 trunk_request = api.CreateSIPOutboundTrunkRequest(
                     trunk=api.SIPOutboundTrunkInfo(
                         name=request.name,
-                        address=request.sip_domain,
+                        address=sip_domain,
                         numbers=[request.from_number],  # Caller ID numbers
-                        auth_username=request.sip_username,
-                        auth_password=request.sip_password,
+                        auth_username=sip_username,
+                        auth_password=sip_password,
                     )
                 )
                 

@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any
 from shared.database.connection import get_database
 from shared.database.models import WorkspaceIntegrations
 from shared.security.crypto import encrypt_secret, decrypt_secret
+from shared.logging_utils import log_resolution
 
 
 logger = logging.getLogger("workspace_integrations_service")
@@ -50,6 +51,17 @@ class WorkspaceIntegrationService:
             return None
 
         integrations = WorkspaceIntegrations.from_dict(raw)
+
+        log_resolution(
+            "Workspace integrations",
+            workspace_id,
+            "database",
+            {
+                "livekit": bool(integrations.livekit and integrations.livekit.url),
+                "ai_providers": bool(integrations.ai_providers),
+                "telephony": bool(integrations.telephony and (integrations.telephony.sip_domain or integrations.telephony.sip_username)),
+            },
+        )
 
         if decrypt:
             return WorkspaceIntegrationService._to_decrypted_dict(integrations)

@@ -5,6 +5,7 @@ Supports multiple providers for user-selectable voice AI configuration.
 import logging
 import os
 from typing import Any, Optional
+from contextlib import contextmanager
 from openai.types.beta.realtime.session import TurnDetection
 
 logger = logging.getLogger("model-factory")
@@ -53,21 +54,38 @@ except ImportError:
     pass
 
 
-def _apply_api_keys(api_keys: Optional[dict]) -> None:
-    """Set provider API keys in environment for the current process."""
+@contextmanager
+def _scoped_env(env_updates: dict):
+    """
+    Temporarily apply environment variables for client construction only.
+    This avoids process-global credential bleed across tenants.
+    """
+    old_values = {k: os.environ.get(k) for k in env_updates.keys()}
+    try:
+        for k, v in env_updates.items():
+            if v:
+                os.environ[k] = v
+        yield
+    finally:
+        for k, old in old_values.items():
+            if old is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = old
+
+
+def _provider_env(api_keys: Optional[dict]) -> dict:
     if not api_keys:
-        return
-    for env_name, key in [
-        ("OPENAI_API_KEY", api_keys.get("openai")),
-        ("DEEPGRAM_API_KEY", api_keys.get("deepgram")),
-        ("GOOGLE_API_KEY", api_keys.get("google")),
-        ("ELEVENLABS_API_KEY", api_keys.get("elevenlabs")),
-        ("CARTESIA_API_KEY", api_keys.get("cartesia")),
-        ("ANTHROPIC_API_KEY", api_keys.get("anthropic")),
-        ("ASSEMBLYAI_API_KEY", api_keys.get("assemblyai")),
-    ]:
-        if key:
-            os.environ[env_name] = key
+        return {}
+    return {
+        "OPENAI_API_KEY": api_keys.get("openai"),
+        "DEEPGRAM_API_KEY": api_keys.get("deepgram"),
+        "GOOGLE_API_KEY": api_keys.get("google"),
+        "ELEVENLABS_API_KEY": api_keys.get("elevenlabs"),
+        "CARTESIA_API_KEY": api_keys.get("cartesia"),
+        "ANTHROPIC_API_KEY": api_keys.get("anthropic"),
+        "ASSEMBLYAI_API_KEY": api_keys.get("assemblyai"),
+    }
 
 
 def get_stt(voice_config: dict, api_keys: Optional[dict] = None) -> Any:
@@ -77,8 +95,6 @@ def get_stt(voice_config: dict, api_keys: Optional[dict] = None) -> Any:
     Supported providers: deepgram, openai, assemblyai
     """
     from livekit.plugins import openai
-
-    _apply_api_keys(api_keys)
     
     provider = voice_config.get("stt_provider", "deepgram")
     model = voice_config.get("stt_model", "nova-2")
@@ -87,11 +103,13 @@ def get_stt(voice_config: dict, api_keys: Optional[dict] = None) -> Any:
     logger.info(f"Creating STT: provider={provider}, model={model}, language={language}")
     
     if provider == "openai":
-        return openai.STT(model=model, language=language)
+        with _scoped_env(_provider_env(api_keys)):
+            return openai.STT(model=model, language=language)
     
     elif provider == "deepgram" and AVAILABLE_PLUGINS["deepgram"]:
         from livekit.plugins import deepgram
-        return deepgram.STT(model=model, language=language)
+        with _scoped_env(_provider_env(api_keys)):
+            return deepgram.STT(model=model, language=language)
     
     elif provider == "assemblyai":
         # AssemblyAI requires API key
@@ -110,8 +128,6 @@ def get_llm(voice_config: dict, api_keys: Optional[dict] = None) -> Any:
     Supported providers: openai, anthropic, google, groq
     """
     from livekit.plugins import openai
-
-    _apply_api_keys(api_keys)
     
     provider = voice_config.get("llm_provider", "openai")
     model = voice_config.get("llm_model", "gpt-4o-mini")
@@ -119,15 +135,18 @@ def get_llm(voice_config: dict, api_keys: Optional[dict] = None) -> Any:
     logger.info(f"Creating LLM: provider={provider}, model={model}")
     
     if provider == "openai":
-        return openai.LLM(model=model)
+        with _scoped_env(_provider_env(api_keys)):
+            return openai.LLM(model=model)
     
     elif provider == "anthropic" and AVAILABLE_PLUGINS["anthropic"]:
         from livekit.plugins import anthropic
-        return anthropic.LLM(model=model)
+        with _scoped_env(_provider_env(api_keys)):
+            return anthropic.LLM(model=model)
     
     elif provider == "google" and AVAILABLE_PLUGINS["google"]:
         from livekit.plugins import google
-        return google.LLM(model=model)
+        with _scoped_env(_provider_env(api_keys)):
+            return google.LLM(model=model)
     
     elif provider == "groq" and AVAILABLE_PLUGINS["groq"]:
         # Groq requires special handling
@@ -146,8 +165,6 @@ def get_tts(voice_config: dict, api_keys: Optional[dict] = None) -> Any:
     Supported providers: elevenlabs, openai, cartesia, deepgram
     """
     from livekit.plugins import openai
-
-    _apply_api_keys(api_keys)
     
     provider = voice_config.get("tts_provider", "openai")
     model = voice_config.get("tts_model", "tts-1")
@@ -156,19 +173,23 @@ def get_tts(voice_config: dict, api_keys: Optional[dict] = None) -> Any:
     logger.info(f"Creating TTS: provider={provider}, model={model}, voice={voice_id}")
     
     if provider == "openai":
-        return openai.TTS(model=model, voice=voice_id)
+        with _scoped_env(_provider_env(api_keys)):
+            return openai.TTS(model=model, voice=voice_id)
     
     elif provider == "elevenlabs" and AVAILABLE_PLUGINS["elevenlabs"]:
         from livekit.plugins import elevenlabs
-        return elevenlabs.TTS(model_id=model, voice=voice_id)
+        with _scoped_env(_provider_env(api_keys)):
+            return elevenlabs.TTS(model_id=model, voice=voice_id)
     
     elif provider == "cartesia" and AVAILABLE_PLUGINS["cartesia"]:
         from livekit.plugins import cartesia
-        return cartesia.TTS(model=model, voice=voice_id)
+        with _scoped_env(_provider_env(api_keys)):
+            return cartesia.TTS(model=model, voice=voice_id)
     
     elif provider == "deepgram" and AVAILABLE_PLUGINS["deepgram"]:
         from livekit.plugins import deepgram
-        return deepgram.TTS(model=model)
+        with _scoped_env(_provider_env(api_keys)):
+            return deepgram.TTS(model=model)
     
     else:
         logger.warning(f"TTS provider '{provider}' not available, falling back to OpenAI")
@@ -182,8 +203,6 @@ def get_realtime_model(voice_config: dict, api_keys: Optional[dict] = None) -> A
     Supported providers: openai, google
     """
     from livekit.plugins import openai
-
-    _apply_api_keys(api_keys)
     
     provider = voice_config.get("realtime_provider", "openai")
     model = voice_config.get("realtime_model", "gpt-4o-realtime-preview")
@@ -193,28 +212,30 @@ def get_realtime_model(voice_config: dict, api_keys: Optional[dict] = None) -> A
     logger.info(f"Creating Realtime: provider={provider}, model={model}, voice={voice_id}")
     
     if provider == "openai":
-        return openai.realtime.RealtimeModel(
-            model=model,
-            voice=voice_id,
-            temperature=temperature,
-            modalities=["text", "audio"],
-            input_audio_transcription={"model": "whisper-1"},
-            turn_detection=TurnDetection(
-                type="server_vad",
-                threshold=0.5,
-                prefix_padding_ms=300,
-                silence_duration_ms=500,
-                create_response=True,
-                interrupt_response=True,
-            ),
-        )
+        with _scoped_env(_provider_env(api_keys)):
+            return openai.realtime.RealtimeModel(
+                model=model,
+                voice=voice_id,
+                temperature=temperature,
+                modalities=["text", "audio"],
+                input_audio_transcription={"model": "whisper-1"},
+                turn_detection=TurnDetection(
+                    type="server_vad",
+                    threshold=0.5,
+                    prefix_padding_ms=300,
+                    silence_duration_ms=500,
+                    create_response=True,
+                    interrupt_response=True,
+                ),
+            )
     
     elif provider == "google" and AVAILABLE_PLUGINS["google"]:
         from livekit.plugins import google
-        return google.RealtimeModel(
-            model=model,
-            voice=voice_id,
-        )
+        with _scoped_env(_provider_env(api_keys)):
+            return google.RealtimeModel(
+                model=model,
+                voice=voice_id,
+            )
     
     else:
         logger.warning(f"Realtime provider '{provider}' not available, falling back to OpenAI")
