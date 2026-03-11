@@ -2,6 +2,7 @@
 Phone Number and SIP Config service.
 """
 import logging
+import json
 from datetime import datetime, timezone
 from typing import Optional, List
 
@@ -161,7 +162,6 @@ class PhoneNumberService:
         This enables automatic agent dispatch for incoming calls.
         """
         from livekit import api
-        from livekit.protocol import sip as sip_proto
         from shared.settings import config
         from services.config.workspace_integrations_service import WorkspaceIntegrationService
         
@@ -245,19 +245,33 @@ class PhoneNumberService:
             trunk_id = trunk.sip_trunk_id
             logger.info(f"Created inbound trunk: {trunk_id}")
             
-            # 2. Create Dispatch Rule for room routing only.
-            # Agent dispatch is handled by gateway /inbound-call to ensure metadata parity with outbound.
+            # 2. Create Dispatch Rule that routes to a room and attaches the voice-assistant agent.
             logger.info("Creating dispatch rule for inbound room routing")
-            dispatch_rule = sip_proto.SIPDispatchRuleInfo(
+            agent_metadata = json.dumps(
+                {
+                    # Explicitly mark as inbound and pass the DID (number that was provisioned).
+                    "is_inbound": True,
+                    "to_number": request.number,
+                }
+            )
+            dispatch_rule = api.SIPDispatchRuleInfo(
                 name=f"Dispatch-{request.number}",
                 trunk_ids=[trunk_id],
-                rule=sip_proto.SIPDispatchRule(
-                    dispatch_rule_individual=sip_proto.SIPDispatchRuleIndividual(
+                rule=api.SIPDispatchRule(
+                    dispatch_rule_individual=api.SIPDispatchRuleIndividual(
                         room_prefix="call-",
                     )
                 ),
+                room_config=api.RoomConfiguration(
+                    agents=[
+                        api.RoomAgentDispatch(
+                            agent_name="voice-assistant",
+                            metadata=agent_metadata,
+                        )
+                    ]
+                ),
             )
-            
+
             result = await lk_api.sip.create_sip_dispatch_rule(
                 api.CreateSIPDispatchRuleRequest(dispatch_rule=dispatch_rule)
             )
