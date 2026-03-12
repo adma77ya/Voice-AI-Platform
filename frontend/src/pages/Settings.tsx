@@ -279,6 +279,57 @@ export default function Settings() {
                 <div className="flex justify-end">
                   <Button onClick={handleSaveWorkspace}>Save Changes</Button>
                 </div>
+
+                <Separator />
+
+                <div className="space-y-4">
+                  <h4 className="font-medium text-foreground">Integrations</h4>
+                  <div className="flex items-center justify-between rounded-lg border border-border p-4">
+                    <div>
+                      <p className="font-medium text-foreground">Google Calendar</p>
+                      <p className="text-sm text-muted-foreground">
+                        Connect a workspace-scoped Google Calendar so the voice agent can book meetings for you.
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      onClick={async () => {
+                        try {
+                          // Ask the backend for the Google OAuth URL (auth via Bearer token),
+                          // then navigate the browser to that URL.
+                          const res = await fetch("/api/calendar/google/connect-url", {
+                            method: "GET",
+                            headers: {
+                              // Our api client normally adds Authorization; here we mimic it
+                              // by reusing the stored access token, if present.
+                              "Authorization": (() => {
+                                const tokens = localStorage.getItem("voiceai_tokens");
+                                if (!tokens) return "";
+                                try {
+                                  const parsed = JSON.parse(tokens);
+                                  return `Bearer ${parsed.access_token}`;
+                                } catch {
+                                  return "";
+                                }
+                              })(),
+                            },
+                          });
+                          if (!res.ok) {
+                            throw new Error("Failed to start calendar connect");
+                          }
+                          const data = await res.json();
+                          if (data.url) {
+                            window.location.href = data.url;
+                          }
+                        } catch (err) {
+                          toast.error("Could not start Google Calendar connection");
+                        }
+                      }}
+                    >
+                      Connect Google Calendar
+                    </Button>
+                  </div>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>

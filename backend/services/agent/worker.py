@@ -134,6 +134,36 @@ class OutboundAssistant(Agent):
         """End the current call when the user wants to hang up or says goodbye."""
         return "Ending the call now. Goodbye!"
 
+    @function_tool()
+    async def book_meeting(
+        self,
+        context: RunContext,
+        name: str,
+        date: str,
+        time: str,
+        phone: str = "",
+    ) -> str:
+        """Book a calendar meeting for the caller."""
+        from services.agent.tools import calendar_tools
+
+        if not self.assistant_id or not self.workspace_id:
+            return "I couldn’t access a workspace-specific calendar."
+
+        try:
+            result = await calendar_tools.book_meeting(
+                workspace_id=self.workspace_id,
+                assistant_id=self.assistant_id,
+                call_id=context.room.name,
+                name=name,
+                date=date,
+                time=time,
+                phone=phone,
+            )
+            return result.get("message", "Your meeting has been booked.")
+        except Exception as e:
+            logger.warning(f"book_meeting tool failed: {e}")
+            return "I wasn’t able to book a meeting just now."
+
 
 async def start_recording(ctx: agents.JobContext, phone_number: str = None, call_id: str = None):
     """Start audio recording to S3 bucket."""
