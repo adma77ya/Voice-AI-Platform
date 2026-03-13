@@ -5,7 +5,7 @@ import os
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv(".env")
+load_dotenv(".env.local")
 
 
 class Config:
@@ -22,6 +22,13 @@ class Config:
     
     # Google/Gemini (for post-call analysis and Gemini Live)
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+    # Google OAuth (for Calendar integration)
+    GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
+    GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
+    # Canonical redirect URI variable
+    GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
+    # Backward-compatible alias for existing environments
+    GOOGLE_OAUTH_REDIRECT_URI = GOOGLE_REDIRECT_URI or os.getenv("GOOGLE_OAUTH_REDIRECT_URI")
     
     # Additional Voice AI Providers (optional)
     DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
@@ -49,6 +56,8 @@ class Config:
     # Server
     API_HOST = os.getenv("API_HOST", "0.0.0.0")
     API_PORT = int(os.getenv("API_PORT", "8000"))
+    # Frontend (used for redirects after OAuth and similar flows)
+    FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
     
     # Internal Service Auth
     INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "vobiz_internal_secret_key_123")

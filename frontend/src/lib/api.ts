@@ -2,7 +2,16 @@
  * API client for making authenticated requests to the backend
  */
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+// Base URL for API requests.
+// - In local dev (Vite), we ALWAYS rely on the dev server proxy (see `vite.config.ts`),
+//   so this must be empty. All requests go to the same origin (e.g. http://localhost:8080)
+//   and are proxied to the Gateway (host port 18000), which avoids CORS entirely.
+// - In production builds, set VITE_API_URL to the deployed Gateway URL
+//   (e.g. https://api.yourdomain.com).
+const API_BASE_URL =
+  import.meta.env.DEV
+    ? ""
+    : (import.meta.env.VITE_API_URL || "");
 
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
@@ -152,4 +161,66 @@ export const apiKeysApi = {
     list: () => api.get<unknown[]>("/api/auth/api-keys"),
     create: (name: string) => api.post<unknown>("/api/auth/api-keys", { name }),
     delete: (id: string) => api.delete<unknown>(`/api/auth/api-keys/${id}`),
+};
+
+// Workspace integrations
+export interface LiveKitIntegrationsResponse {
+    url?: string | null;
+    api_key?: string | null;
+    api_secret?: string | null;
+}
+
+export interface AIProvidersIntegrationsResponse {
+    openai_key?: string | null;
+    deepgram_key?: string | null;
+    google_key?: string | null;
+    elevenlabs_key?: string | null;
+    cartesia_key?: string | null;
+    anthropic_key?: string | null;
+    assemblyai_key?: string | null;
+}
+
+export interface TelephonyIntegrationsResponse {
+    sip_domain?: string | null;
+    sip_username?: string | null;
+    sip_password?: string | null;
+    outbound_number?: string | null;
+}
+
+export interface WorkspaceIntegrationsResponse {
+    livekit?: LiveKitIntegrationsResponse | null;
+    ai_providers?: AIProvidersIntegrationsResponse | null;
+    telephony?: TelephonyIntegrationsResponse | null;
+}
+
+export interface WorkspaceIntegrationsPayload {
+    livekit?: {
+        url?: string;
+        api_key?: string;
+        api_secret?: string;
+    };
+    ai_providers?: {
+        openai_key?: string;
+        deepgram_key?: string;
+        google_key?: string;
+        elevenlabs_key?: string;
+        cartesia_key?: string;
+        anthropic_key?: string;
+        assemblyai_key?: string;
+    };
+    telephony?: {
+        sip_domain?: string;
+        sip_username?: string;
+        sip_password?: string;
+        outbound_number?: string;
+    };
+}
+
+export const workspaceIntegrationsApi = {
+    get: () => api.get<WorkspaceIntegrationsResponse>("/api/workspace/integrations"),
+    create: (data: WorkspaceIntegrationsPayload) =>
+        api.post<WorkspaceIntegrationsResponse>("/api/workspace/integrations", data),
+    update: (data: WorkspaceIntegrationsPayload) =>
+        api.patch<WorkspaceIntegrationsResponse>("/api/workspace/integrations", data),
+    delete: () => api.delete<{ message: string }>("/api/workspace/integrations"),
 };

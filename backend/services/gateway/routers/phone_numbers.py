@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from shared.database.models import CreatePhoneNumberRequest, CreateInboundNumberRequest
-from services import PhoneNumberService
+from services.config.phone_sip_service import PhoneNumberService
 from shared.auth.dependencies import get_current_user_optional
 from shared.auth.models import User
 

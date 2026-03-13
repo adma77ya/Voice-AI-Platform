@@ -37,6 +37,13 @@ from .knowledge import (
     KnowledgeSourceType,
     KnowledgeStatus,
 )
+from .workspace_integrations import (
+    WorkspaceIntegrations,
+    LiveKitIntegration,
+    AIProvidersIntegration,
+    TelephonyIntegration,
+)
+from .workspace_calendar import WorkspaceCalendar
 
 __all__ = [
     # Call models
@@ -76,4 +83,11 @@ __all__ = [
     "KnowledgeChunk",
     "KnowledgeSourceType",
     "KnowledgeStatus",
+    # Workspace integrations
+    "WorkspaceIntegrations",
+    "LiveKitIntegration",
+    "AIProvidersIntegration",
+    "TelephonyIntegration",
+    # Workspace calendars
+    "WorkspaceCalendar",
 ]

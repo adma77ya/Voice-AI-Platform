@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from shared.database.models import CreateToolRequest, UpdateToolRequest, ToolResponse
-from services import ToolService
+from services.config.tool_service import ToolService
 from shared.auth.dependencies import get_current_user
 from shared.auth.models import User
 

@@ -14,7 +14,7 @@ from shared.database.models import (
     CampaignResponse,
     CampaignStatus,
 )
-from services import CampaignService
+from services.orchestration.campaign_service import CampaignService
 from shared.auth.dependencies import get_current_user
 from shared.auth.models import User
 

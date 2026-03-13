@@ -27,17 +27,24 @@ class CallService:
         return f"call-{phone_clean}-{random_suffix}"
     
     @staticmethod
-    async def create_call(request: CreateCallRequest, workspace_id: Optional[str] = None) -> CallRecord:
+    async def create_call(
+        request: CreateCallRequest,
+        workspace_id: Optional[str] = None,
+        auto_dispatch: bool = True,
+    ) -> CallRecord:
         """
         Create a new call record and dispatch the agent.
         
         Args:
             request: Call creation request with phone number and options
-            workspace_id: Workspace ID for multi-tenancy
+            workspace_id: Workspace ID for multi-tenancy (required)
             
         Returns:
             Created CallRecord
         """
+        if not workspace_id:
+            raise ValueError("workspace_id is required when creating a call")
+
         db = get_database()
         
         # Generate call ID
@@ -81,7 +88,7 @@ class CallService:
         # Create call record
         call = CallRecord(
             call_id=call_id,
-            workspace_id=workspace_id,  # Multi-tenancy
+            workspace_id=workspace_id,  # Multi-tenancy (always set)
             phone_number=request.phone_number,
             from_number=request.from_number,
             room_name=room_name,
@@ -96,14 +103,20 @@ class CallService:
         
         # Save to database
         await db.calls.insert_one(call.to_dict())
-        logger.info(f"Created call record: {call_id}")
+        logger.info(
+            "Call created | workspace_id=%s | assistant_id=%s | phone_number=%s",
+            workspace_id,
+            request.assistant_id,
+            request.phone_number,
+        )
         
         # Invalidate calls cache
         if workspace_id:
             await SessionCache.invalidate_calls(workspace_id)
         
         # Dispatch the agent
-        await CallService._dispatch_agent(call, assistant_config, sip_trunk_id)
+        if auto_dispatch:
+            await CallService._dispatch_agent(call, assistant_config, sip_trunk_id)
         
         return call
     
@@ -111,23 +124,67 @@ class CallService:
     async def _dispatch_agent(call: CallRecord, assistant_config: dict = None, sip_trunk_id: str = None):
         """Dispatch the LiveKit agent to handle the call."""
         import json
-        
+
+        from services.config.workspace_integrations_service import WorkspaceIntegrationService
+        from shared.settings import config as global_config
+
+        livekit_url = global_config.LIVEKIT_URL
+        livekit_api_key = global_config.LIVEKIT_API_KEY
+        livekit_api_secret = global_config.LIVEKIT_API_SECRET
+
+        # Per-workspace LiveKit credentials (fallback to env-based config)
+        workspace_id = call.workspace_id
+        livekit_source = "platform-env"
+        if workspace_id:
+            try:
+                integrations = await WorkspaceIntegrationService.get_workspace_integrations(
+                    workspace_id, decrypt=True
+                )
+            except Exception as e:
+                integrations = None
+                logger.warning("Failed to load workspace integrations for LiveKit: %s", e)
+
+            if integrations and integrations.get("livekit"):
+                lk_cfg = integrations["livekit"]
+                livekit_url = lk_cfg.get("url") or livekit_url
+                livekit_api_key = lk_cfg.get("api_key") or livekit_api_key
+                livekit_api_secret = lk_cfg.get("api_secret") or livekit_api_secret
+                livekit_source = "workspace_integrations"
+
+        from shared.logging_utils import log_resolution
+        log_resolution("LiveKit", workspace_id, livekit_source, livekit_url)
+
         lk_api = api.LiveKitAPI(
-            url=config.LIVEKIT_URL,
-            api_key=config.LIVEKIT_API_KEY,
-            api_secret=config.LIVEKIT_API_SECRET,
+            url=livekit_url,
+            api_key=livekit_api_key,
+            api_secret=livekit_api_secret,
         )
         
         try:
+            dispatch_workspace_id = call.workspace_id
+            if not dispatch_workspace_id and assistant_config:
+                dispatch_workspace_id = assistant_config.get("workspace_id")
+
             # Build metadata with call config
             metadata_dict = {
                 "phone_number": call.phone_number,
                 "call_id": call.call_id,
                 "assistant_id": call.assistant_id,
+                "workspace_id": dispatch_workspace_id,
                 "sip_trunk_id": sip_trunk_id or config.OUTBOUND_TRUNK_ID,
                 "instructions": call.instructions,
                 "webhook_url": call.webhook_url,
+                "direction": "outbound",
             }
+
+            if isinstance(call.metadata, dict):
+                metadata_dict.update({
+                    "from_number": call.metadata.get("from_number", call.metadata.get("phone_number")),
+                    "to_number": call.metadata.get("to_number"),
+                    "is_inbound": bool(call.metadata.get("is_inbound", False)),
+                    "sip_trunk_id": call.metadata.get("sip_trunk_id", metadata_dict["sip_trunk_id"]),
+                    "direction": call.metadata.get("direction", metadata_dict["direction"]),
+                })
             
             # Add assistant-specific config
             if assistant_config:
@@ -144,8 +201,16 @@ class CallService:
                         voice_config = voice if isinstance(voice, dict) else {}
                     
                     metadata_dict["voice"] = voice_config
+                    metadata_dict["voice_mode"] = voice_config.get("mode")
+                    metadata_dict["voice_provider"] = voice_config.get("llm_provider") if voice_config.get("mode") == "pipeline" else voice_config.get("realtime_provider")
+                    metadata_dict["voice_model"] = voice_config.get("llm_model") if voice_config.get("mode") == "pipeline" else voice_config.get("realtime_model")
                 else:
                     metadata_dict["voice_id"] = "alloy"
+
+            if isinstance(call.metadata, dict):
+                for key in ["instructions", "first_message", "temperature", "voice", "webhook_url", "voice_mode", "voice_provider", "voice_model", "direction"]:
+                    if key in call.metadata and call.metadata.get(key) is not None:
+                        metadata_dict[key] = call.metadata.get(key)
             
             metadata = json.dumps(metadata_dict)
             logger.info(f"DISPATCH METADATA: {metadata_dict}")
@@ -154,6 +219,7 @@ class CallService:
             try:
                 await lk_api.room.create_room(api.CreateRoomRequest(name=call.room_name))
                 logger.info(f"Created room: {call.room_name}")
+                logger.info(f"ROOM CREATED: {call.room_name}")
             except Exception as e:
                 logger.warning(f"Room {call.room_name} might already exist or failed execution: {e}")
 
@@ -181,12 +247,8 @@ class CallService:
         db = get_database()
         query = {"call_id": call_id}
         if workspace_id:
-            # Include legacy calls without workspace_id
-            query["$or"] = [
-                {"workspace_id": workspace_id},
-                {"workspace_id": None},
-                {"workspace_id": {"$exists": False}},
-            ]
+            # Strict workspace scoping for tenant calls
+            query["workspace_id"] = workspace_id
         doc = await db.calls.find_one(query)
         if doc:
             # Cache the result
@@ -219,24 +281,21 @@ class CallService:
         skip: int = 0,
         workspace_id: Optional[str] = None,
     ) -> List[CallRecord]:
-        """List calls with optional filters, scoped by workspace (with legacy support)."""
+        """List calls with optional filters, strictly scoped by workspace."""
+        # Do not allow listing calls without a workspace scope
+        if not workspace_id:
+            return []
+
         # Check cache first (only for default query without filters)
-        if workspace_id and status is None and phone_number is None and skip == 0:
+        if status is None and phone_number is None and skip == 0:
             cached = await SessionCache.get_recent_calls(workspace_id)
             if cached:
                 return [CallRecord.from_dict(c) for c in cached[:limit]]
         
         db = get_database()
         
-        # Build query with workspace filter (backwards compatible)
-        query = {}
-        if workspace_id:
-            # Include legacy calls without workspace_id
-            query["$or"] = [
-                {"workspace_id": workspace_id},
-                {"workspace_id": None},
-                {"workspace_id": {"$exists": False}},
-            ]
+        # Build query with strict workspace filter
+        query = {"workspace_id": workspace_id}
         if status:
             query["status"] = status.value
         if phone_number:

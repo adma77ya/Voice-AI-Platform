@@ -2,6 +2,7 @@
 Phone Number and SIP Config service.
 """
 import logging
+import json
 from datetime import datetime, timezone
 from typing import Optional, List
 
@@ -87,6 +88,57 @@ class PhoneNumberService:
         if doc:
             return PhoneNumber.from_dict(doc)
         return None
+
+    @staticmethod
+    async def get_assistant_by_number(number: str) -> Optional[dict]:
+        """Resolve assistant config for an active inbound phone number."""
+        if not number:
+            return None
+
+        db = get_database()
+        phone_doc = await db.phone_numbers.find_one(
+            {
+                "number": number,
+                "direction": "inbound",
+                "is_active": True,
+                "assistant_id": {"$exists": True, "$ne": None, "$ne": ""},
+            }
+        )
+        if not phone_doc:
+            return None
+
+        assistant_id = phone_doc.get("assistant_id")
+        workspace_id = phone_doc.get("workspace_id")
+
+        from services.config.assistant_service import AssistantService
+
+        assistant = await AssistantService.get_assistant(assistant_id, workspace_id=workspace_id)
+        if not assistant or not assistant.is_active:
+            return None
+
+        voice = assistant.voice.model_dump() if assistant.voice else {}
+        voice_mode = voice.get("mode") or "pipeline"
+        if voice_mode == "realtime":
+            voice_provider = voice.get("realtime_provider")
+            voice_model = voice.get("realtime_model")
+        else:
+            voice_provider = voice.get("llm_provider")
+            voice_model = voice.get("llm_model")
+
+        return {
+            "assistant_id": assistant.assistant_id,
+            "workspace_id": assistant.workspace_id or workspace_id,
+            "instructions": assistant.instructions,
+            "first_message": assistant.first_message,
+            "temperature": assistant.temperature,
+            "voice": voice,
+            "voice_mode": voice_mode,
+            "voice_provider": voice_provider,
+            "voice_model": voice_model,
+            "phone_id": phone_doc.get("phone_id"),
+            "to_number": phone_doc.get("number"),
+            "inbound_trunk_id": phone_doc.get("inbound_trunk_id"),
+        }
     
     @staticmethod
     async def delete_phone_number(phone_id: str, workspace_id: str = None) -> bool:
@@ -110,16 +162,40 @@ class PhoneNumberService:
         This enables automatic agent dispatch for incoming calls.
         """
         from livekit import api
-        from livekit.protocol import sip as sip_proto
         from shared.settings import config
+        from services.config.workspace_integrations_service import WorkspaceIntegrationService
         
         db = get_database()
-        
+
+        livekit_url = config.LIVEKIT_URL
+        livekit_api_key = config.LIVEKIT_API_KEY
+        livekit_api_secret = config.LIVEKIT_API_SECRET
+        livekit_source = "platform-env"
+
+        if workspace_id:
+            try:
+                integrations = await WorkspaceIntegrationService.get_workspace_integrations(
+                    workspace_id, decrypt=True
+                )
+            except Exception as e:
+                integrations = None
+                logger.warning("Failed to load workspace integrations for LiveKit inbound setup: %s", e)
+
+            if integrations and integrations.get("livekit"):
+                lk_cfg = integrations["livekit"]
+                livekit_url = lk_cfg.get("url") or livekit_url
+                livekit_api_key = lk_cfg.get("api_key") or livekit_api_key
+                livekit_api_secret = lk_cfg.get("api_secret") or livekit_api_secret
+                livekit_source = "workspace_integrations"
+
+        from shared.logging_utils import log_resolution
+        log_resolution("LiveKit", workspace_id, livekit_source, livekit_url)
+
         # Connect to LiveKit API
         lk_api = api.LiveKitAPI(
-            url=config.LIVEKIT_URL,
-            api_key=config.LIVEKIT_API_KEY,
-            api_secret=config.LIVEKIT_API_SECRET,
+            url=livekit_url,
+            api_key=livekit_api_key,
+            api_secret=livekit_api_secret,
         )
         
         try:
@@ -169,24 +245,33 @@ class PhoneNumberService:
             trunk_id = trunk.sip_trunk_id
             logger.info(f"Created inbound trunk: {trunk_id}")
             
-            # 2. Create Dispatch Rule linking to agent
-            logger.info(f"Creating dispatch rule for agent")
-            dispatch_rule = sip_proto.SIPDispatchRuleInfo(
+            # 2. Create Dispatch Rule that routes to a room and attaches the voice-assistant agent.
+            logger.info("Creating dispatch rule for inbound room routing")
+            agent_metadata = json.dumps(
+                {
+                    # Explicitly mark as inbound and pass the DID (number that was provisioned).
+                    "is_inbound": True,
+                    "to_number": request.number,
+                }
+            )
+            dispatch_rule = api.SIPDispatchRuleInfo(
                 name=f"Dispatch-{request.number}",
                 trunk_ids=[trunk_id],
-                rule=sip_proto.SIPDispatchRule(
-                    dispatch_rule_individual=sip_proto.SIPDispatchRuleIndividual(
+                rule=api.SIPDispatchRule(
+                    dispatch_rule_individual=api.SIPDispatchRuleIndividual(
                         room_prefix="call-",
                     )
                 ),
+                room_config=api.RoomConfiguration(
+                    agents=[
+                        api.RoomAgentDispatch(
+                            agent_name="voice-assistant",
+                            metadata=agent_metadata,
+                        )
+                    ]
+                ),
             )
-            # Set room config with agent dispatch
-            dispatch_rule.room_config.CopyFrom(
-                api.RoomConfiguration(
-                    agents=[api.RoomAgentDispatch(agent_name="voice-assistant")]
-                )
-            )
-            
+
             result = await lk_api.sip.create_sip_dispatch_rule(
                 api.CreateSIPDispatchRuleRequest(dispatch_rule=dispatch_rule)
             )
@@ -231,6 +316,7 @@ class PhoneNumberService:
         """Delete an inbound phone number and its LiveKit resources."""
         from livekit import api
         from shared.settings import config
+        from services.config.workspace_integrations_service import WorkspaceIntegrationService
         
         db = get_database()
         
@@ -248,10 +334,34 @@ class PhoneNumberService:
         # Delete LiveKit resources if they exist
         if phone.dispatch_rule_id or phone.inbound_trunk_id:
             try:
+                livekit_url = config.LIVEKIT_URL
+                livekit_api_key = config.LIVEKIT_API_KEY
+                livekit_api_secret = config.LIVEKIT_API_SECRET
+                livekit_source = "platform-env"
+
+                if workspace_id:
+                    try:
+                        integrations = await WorkspaceIntegrationService.get_workspace_integrations(
+                            workspace_id, decrypt=True
+                        )
+                    except Exception as e:
+                        integrations = None
+                        logger.warning("Failed to load workspace integrations for LiveKit inbound delete: %s", e)
+
+                    if integrations and integrations.get("livekit"):
+                        lk_cfg = integrations["livekit"]
+                        livekit_url = lk_cfg.get("url") or livekit_url
+                        livekit_api_key = lk_cfg.get("api_key") or livekit_api_key
+                        livekit_api_secret = lk_cfg.get("api_secret") or livekit_api_secret
+                        livekit_source = "workspace_integrations"
+
+                from shared.logging_utils import log_resolution
+                log_resolution("LiveKit", workspace_id, livekit_source, livekit_url)
+
                 lk_api = api.LiveKitAPI(
-                    url=config.LIVEKIT_URL,
-                    api_key=config.LIVEKIT_API_KEY,
-                    api_secret=config.LIVEKIT_API_SECRET,
+                    url=livekit_url,
+                    api_key=livekit_api_key,
+                    api_secret=livekit_api_secret,
                 )
                 
                 # Delete dispatch rule first
@@ -289,8 +399,31 @@ class SipConfigService:
         """Create a new SIP configuration and optionally create LiveKit trunk."""
         from livekit import api
         from shared.settings import config
+        from services.config.workspace_integrations_service import WorkspaceIntegrationService
         
         db = get_database()
+
+        if not workspace_id:
+            raise ValueError("workspace_id is required when creating SIP configs")
+
+        # Ensure telephony integration exists for this workspace
+        integrations = await WorkspaceIntegrationService.get_workspace_integrations(
+            workspace_id, decrypt=True
+        )
+        telephony = integrations.get("telephony") if integrations else None
+        if not telephony:
+            raise ValueError(
+                "Telephony provider must be configured in workspace integrations before creating SIP configs"
+            )
+        sip_domain = telephony.get("sip_domain")
+        sip_username = telephony.get("sip_username")
+        sip_password = telephony.get("sip_password")
+        from shared.logging_utils import log_resolution
+        log_resolution("Telephony", workspace_id, "workspace_integrations", sip_domain)
+        if not sip_domain or not sip_username or not sip_password:
+            raise ValueError(
+                "Telephony provider configuration is incomplete for this workspace"
+            )
         
         # If this is set as default, unset other defaults for this workspace
         if request.is_default:
@@ -304,20 +437,38 @@ class SipConfigService:
         # If no trunk_id provided, create a new LiveKit outbound trunk
         if not trunk_id:
             try:
+                livekit_url = config.LIVEKIT_URL
+                livekit_api_key = config.LIVEKIT_API_KEY
+                livekit_api_secret = config.LIVEKIT_API_SECRET
+
+                try:
+                    integrations = await WorkspaceIntegrationService.get_workspace_integrations(
+                        workspace_id, decrypt=True
+                    )
+                except Exception as e:
+                    integrations = None
+                    logger.warning("Failed to load workspace integrations for LiveKit outbound trunk: %s", e)
+
+                if integrations and integrations.get("livekit"):
+                    lk_cfg = integrations["livekit"]
+                    livekit_url = lk_cfg.get("url") or livekit_url
+                    livekit_api_key = lk_cfg.get("api_key") or livekit_api_key
+                    livekit_api_secret = lk_cfg.get("api_secret") or livekit_api_secret
+
                 lk_api = api.LiveKitAPI(
-                    url=config.LIVEKIT_URL,
-                    api_key=config.LIVEKIT_API_KEY,
-                    api_secret=config.LIVEKIT_API_SECRET,
+                    url=livekit_url,
+                    api_key=livekit_api_key,
+                    api_secret=livekit_api_secret,
                 )
                 
-                # Create outbound trunk with provided credentials
+                # Create outbound trunk using telephony credentials from workspace integrations
                 trunk_request = api.CreateSIPOutboundTrunkRequest(
                     trunk=api.SIPOutboundTrunkInfo(
                         name=request.name,
-                        address=request.sip_domain,
+                        address=sip_domain,
                         numbers=[request.from_number],  # Caller ID numbers
-                        auth_username=request.sip_username,
-                        auth_password=request.sip_password,
+                        auth_username=sip_username,
+                        auth_password=sip_password,
                     )
                 )
                 
@@ -334,9 +485,6 @@ class SipConfigService:
         sip = SipConfig(
             workspace_id=workspace_id,
             name=request.name,
-            sip_domain=request.sip_domain,
-            sip_username=request.sip_username,
-            sip_password=request.sip_password,
             from_number=request.from_number,
             trunk_id=trunk_id,
             description=request.description,

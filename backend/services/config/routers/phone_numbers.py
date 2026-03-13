@@ -33,7 +33,7 @@ async def add_phone_number(
     if not request.number.startswith("+"):
         raise HTTPException(status_code=400, detail="Phone must be E.164 format")
     
-    from config.phone_sip_service import PhoneNumberService
+    from services.config.phone_sip_service import PhoneNumberService
     from shared.database.models import CreateInboundNumberRequest
     
     try:
@@ -114,7 +114,7 @@ async def get_phone_number(phone_id: str):
 @router.delete("/{phone_id}")
 async def delete_phone_number(phone_id: str):
     """Delete phone/inbound number and clean up LiveKit resources."""
-    from config.phone_sip_service import PhoneNumberService
+    from services.config.phone_sip_service import PhoneNumberService
     
     try:
         # We try to delete as an inbound number first (which handles LiveKit cleanup)
