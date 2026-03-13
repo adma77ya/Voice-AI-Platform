@@ -14,10 +14,11 @@ _DATEPARSER_SETTINGS = {
     "RETURN_AS_TIMEZONE_AWARE": False,
     "PREFER_DAY_OF_MONTH": "first",
     "DATE_ORDER": "DMY",  # prefer DD-MM-YYYY for ambiguous inputs
+    "PREFER_DATES_FROM": "future",
 }
 
 
-def _normalize_date_time(date: str, time: str) -> tuple[str, str]:
+def normalize_datetime(date_str: str, time_str: str) -> tuple[str, str]:
     """Normalize natural-language date/time to canonical ISO formats.
 
     Uses ``dateparser`` to handle the full range of LLM-produced strings:
@@ -33,8 +34,8 @@ def _normalize_date_time(date: str, time: str) -> tuple[str, str]:
       - "Five fifty five PM" / "5:55 PM" / "17:55"
 
     Args:
-        date: Date string in any supported format.
-        time: Time string in any supported format.
+        date_str: Date string in any supported format.
+        time_str: Time string in any supported format.
 
     Returns:
         ``(normalized_date, normalized_time)`` where
@@ -44,20 +45,39 @@ def _normalize_date_time(date: str, time: str) -> tuple[str, str]:
     Raises:
         ValueError: If the combined string cannot be parsed.
     """
-    text = f"{date.strip()} {time.strip()}".strip()
+    raw_date = (date_str or "").strip()
+    raw_time = (time_str or "").strip()
+    text = f"{raw_date} {raw_time}".strip()
     logger.debug(f"Attempting to parse datetime text: '{text}'")
 
     parsed = dateparser.parse(text, settings=_DATEPARSER_SETTINGS)
 
     if parsed is None:
+        logger.error(
+            "Datetime parse failed: raw_date='%s' raw_time='%s'",
+            raw_date,
+            raw_time,
+        )
         raise ValueError(
-            f"Unable to normalize date/time: date='{date}' time='{time}'"
+            f"Unable to normalize date/time: date='{raw_date}' time='{raw_time}'"
         )
 
     normalized_date = parsed.strftime("%Y-%m-%d")
     normalized_time = parsed.strftime("%H:%M")
+    logger.debug(
+        "Parsed datetime: raw_date='%s' raw_time='%s' normalized='%s %s'",
+        raw_date,
+        raw_time,
+        normalized_date,
+        normalized_time,
+    )
     logger.info(f"Normalized booking datetime → {normalized_date} {normalized_time}")
     return normalized_date, normalized_time
+
+
+def _normalize_date_time(date: str, time: str) -> tuple[str, str]:
+    """Backward-compatible wrapper around `normalize_datetime()`."""
+    return normalize_datetime(date, time)
 
 
 async def book_meeting(
@@ -92,11 +112,18 @@ async def book_meeting(
     internal_key = os.getenv("INTERNAL_API_KEY", config.INTERNAL_API_KEY)
     base_url = os.getenv("GATEWAY_INTERNAL_URL", "http://gateway:8000")
     
+    logger.debug("book_meeting raw datetime: date='%s' time='%s'", date, time)
+
     # Normalize date/time to canonical formats
     try:
-        normalized_date, normalized_time = _normalize_date_time(date, time)
+        normalized_date, normalized_time = normalize_datetime(date, time)
     except ValueError as e:
-        logger.error(f"Failed to normalize date/time for booking: {str(e)}")
+        logger.error(
+            "Failed to normalize date/time for booking: raw_date='%s' raw_time='%s' error='%s'",
+            date,
+            time,
+            str(e),
+        )
         raise
     
     logger.info(f"Booking meeting: {name} on {normalized_date} at {normalized_time}")
