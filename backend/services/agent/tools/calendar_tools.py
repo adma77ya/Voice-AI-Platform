@@ -1,189 +1,63 @@
 import os
 from typing import Dict, Any
 import logging
-from datetime import datetime
-import re
 
 import httpx
+import dateparser
 
 from shared.settings import config
 
 logger = logging.getLogger("agent.calendar_tools")
 
-# Word-to-number mapping for spelled-out numbers
-WORD_TO_NUM = {
-    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
-    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
-    "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
+# dateparser settings used across all parsing calls
+_DATEPARSER_SETTINGS = {
+    "RETURN_AS_TIMEZONE_AWARE": False,
+    "PREFER_DAY_OF_MONTH": "first",
+    "DATE_ORDER": "DMY",  # prefer DD-MM-YYYY for ambiguous inputs
 }
 
 
-def _convert_words_to_numbers(text: str) -> str:
-    """Convert spelled-out numbers in text to digits.
-    
-    Examples:
-    - "March thirteen twenty twenty six" → "March 13 20 26" or similar
-    - "Five fifty five PM" → "5 55 PM"
-    """
-    if not text:
-        return text
-    
-    text_lower = text.lower()
-    words = text_lower.split()
-    result = []
-    
-    for word in words:
-        # Check if word is a digit word
-        if word in WORD_TO_NUM:
-            result.append(str(WORD_TO_NUM[word]))
-        else:
-            result.append(word)
-    
-    return " ".join(result)
-
-
-def _parse_spelled_date(text: str) -> str:
-    """Parse spelled-out date like 'March thirteen twenty twenty six' to '2026-03-13'.
-    
-    Handles patterns like:
-    - "March thirteen twenty twenty six" → "2026-03-13"
-    - "March 13 2026" → "2026-03-13"
-    """
-    text = text.strip()
-    
-    # Convert word numbers to digits
-    converted = _convert_words_to_numbers(text)
-    
-    # Try parsing with converted text
-    date_formats = [
-        "%B %d %Y",  # "March 13 2026"
-        "%b %d %Y",  # "Mar 13 2026"
-        "%B %d, %Y",
-        "%b %d, %Y",
-        "%Y-%m-%d",
-        "%m/%d/%Y",
-        "%d/%m/%Y",
-    ]
-    
-    for fmt in date_formats:
-        try:
-            parsed = datetime.strptime(converted, fmt)
-            return parsed.strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    
-    raise ValueError(f"Unable to parse date: '{text}'")
-
-
-def _parse_spelled_time(text: str) -> str:
-    """Parse spelled-out time like 'Five fifty five PM' to '17:55'.
-    
-    Handles patterns like:
-    - "Five fifty five PM" → "17:55"
-    - "5:55 PM" → "17:55"
-    """
-    text = text.strip()
-    
-    # Convert word numbers to digits
-    converted = _convert_words_to_numbers(text)
-    
-    # Try parsing with converted text
-    time_formats = [
-        "%I %M %p",  # "5 55 PM"
-        "%I %p",     # "5 PM"
-        "%I:%M %p",  # "5:55 PM"
-        "%H:%M",     # "17:55"
-        "%H",        # "17"
-    ]
-    
-    for fmt in time_formats:
-        try:
-            parsed = datetime.strptime(converted, fmt)
-            return parsed.strftime("%H:%M")
-        except ValueError:
-            continue
-    
-    raise ValueError(f"Unable to parse time: '{text}'")
-
-
 def _normalize_date_time(date: str, time: str) -> tuple[str, str]:
-    """Normalize date/time strings to ISO date (YYYY-MM-DD) and time (HH:MM).
-    
-    Supports both numeric and spelled-out formats:
-    - Date: "March 13 2026", "March thirteen twenty twenty six", "2026-03-13"
-    - Time: "5:55 PM", "Five fifty five PM", "17:55"
+    """Normalize natural-language date/time to canonical ISO formats.
+
+    Uses ``dateparser`` to handle the full range of LLM-produced strings:
+
+    Date examples accepted:
+      - "2026-03-13" / "13-03-2026" / "13/03/2026"
+      - "March 13 2026" / "13 March 2026"
+      - "March thirteen twenty twenty six" (fully spoken)
+      - "Thirteenth of March twenty twenty six"
+
+    Time examples accepted:
+      - "04:15" / "4:15 AM" / "4:15AM"
+      - "Five fifty five PM" / "5:55 PM" / "17:55"
+
+    Args:
+        date: Date string in any supported format.
+        time: Time string in any supported format.
+
+    Returns:
+        ``(normalized_date, normalized_time)`` where
+        - ``normalized_date`` is ``YYYY-MM-DD``
+        - ``normalized_time`` is ``HH:MM`` (24-hour)
+
+    Raises:
+        ValueError: If the combined string cannot be parsed.
     """
-    raw_date = (date or "").strip()
-    raw_time = (time or "").strip()
+    text = f"{date.strip()} {time.strip()}".strip()
+    logger.debug(f"Attempting to parse datetime text: '{text}'")
 
-    # Try the new spelled-out date/time parsers first
-    try:
-        normalized_date = _parse_spelled_date(raw_date)
-        normalized_time = _parse_spelled_time(raw_time)
-        return normalized_date, normalized_time
-    except ValueError:
-        pass
+    parsed = dateparser.parse(text, settings=_DATEPARSER_SETTINGS)
 
-    # Fallback to original logic for backwards compatibility
-    # First try parsing as a combined datetime.
-    combined_candidates = [
-        f"{raw_date} {raw_time}",
-        f"{raw_date}T{raw_time}",
-    ]
-    combined_formats = [
-        "%Y-%m-%d %H:%M",
-        "%Y-%m-%d %I:%M %p",
-        "%B %d %Y %I:%M %p",
-        "%B %d, %Y %I:%M %p",
-        "%b %d %Y %I:%M %p",
-        "%b %d, %Y %I:%M %p",
-    ]
-    for value in combined_candidates:
-        for fmt in combined_formats:
-            try:
-                parsed = datetime.strptime(value, fmt)
-                return parsed.strftime("%Y-%m-%d"), parsed.strftime("%H:%M")
-            except ValueError:
-                continue
+    if parsed is None:
+        raise ValueError(
+            f"Unable to normalize date/time: date='{date}' time='{time}'"
+        )
 
-    # Parse date independently.
-    date_formats = [
-        "%Y-%m-%d",
-        "%B %d %Y",
-        "%B %d, %Y",
-        "%b %d %Y",
-        "%b %d, %Y",
-        "%m/%d/%Y",
-        "%d/%m/%Y",
-    ]
-    parsed_date = None
-    for fmt in date_formats:
-        try:
-            parsed_date = datetime.strptime(raw_date, fmt)
-            break
-        except ValueError:
-            continue
-
-    # Parse time independently.
-    time_formats = [
-        "%H:%M",
-        "%I:%M %p",
-        "%I %p",
-    ]
-    parsed_time = None
-    for fmt in time_formats:
-        try:
-            parsed_time = datetime.strptime(raw_time, fmt)
-            break
-        except ValueError:
-            continue
-
-    if parsed_date and parsed_time:
-        return parsed_date.strftime("%Y-%m-%d"), parsed_time.strftime("%H:%M")
-
-    raise ValueError(f"Unable to normalize date/time: date='{date}' time='{time}'")
+    normalized_date = parsed.strftime("%Y-%m-%d")
+    normalized_time = parsed.strftime("%H:%M")
+    logger.info(f"Normalized booking datetime → {normalized_date} {normalized_time}")
+    return normalized_date, normalized_time
 
 
 async def book_meeting(
@@ -195,12 +69,38 @@ async def book_meeting(
     time: str,
     phone: str = "",
 ) -> Dict[str, Any]:
-    """Call the Gateway to book a calendar meeting for this workspace."""
+    """Call the Gateway to book a calendar meeting for this workspace.
+    
+    Normalizes date/time to canonical formats before sending to gateway.
+    
+    Args:
+        workspace_id: Workspace identifier
+        assistant_id: Assistant identifier
+        call_id: Call identifier
+        name: Attendee name
+        date: Date in any supported format (see _normalize_date_time)
+        time: Time in any supported format (see _normalize_date_time)
+        phone: Optional phone number
+    
+    Returns:
+        Response from gateway with booking confirmation
+    
+    Raises:
+        ValueError: If date/time normalization fails
+        httpx.HTTPStatusError: If gateway request fails
+    """
     internal_key = os.getenv("INTERNAL_API_KEY", config.INTERNAL_API_KEY)
     base_url = os.getenv("GATEWAY_INTERNAL_URL", "http://gateway:8000")
-    normalized_date, normalized_time = _normalize_date_time(date, time)
-    logger.info(f"Normalized date/time → {normalized_date} {normalized_time}")
-
+    
+    # Normalize date/time to canonical formats
+    try:
+        normalized_date, normalized_time = _normalize_date_time(date, time)
+    except ValueError as e:
+        logger.error(f"Failed to normalize date/time for booking: {str(e)}")
+        raise
+    
+    logger.info(f"Booking meeting: {name} on {normalized_date} at {normalized_time}")
+    
     payload = {
         "workspace_id": workspace_id,
         "assistant_id": assistant_id,
@@ -210,6 +110,8 @@ async def book_meeting(
         "date": normalized_date,
         "time": normalized_time,
     }
+
+    logger.debug(f"Calendar booking payload: {payload}")
 
     async with httpx.AsyncClient(timeout=5.0) as client:
         # Canonical route is mounted under /api.
@@ -227,7 +129,9 @@ async def book_meeting(
             )
 
         resp.raise_for_status()
-        return resp.json()
+        result = resp.json()
+        logger.info(f"Calendar booking successful: event_id={result.get('event_id')}")
+        return result
 
 
 async def execute_tool(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
